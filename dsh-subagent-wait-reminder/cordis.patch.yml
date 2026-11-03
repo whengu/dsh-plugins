@@ -1,0 +1,3 @@
+- insert:
+    - id: subagent-wait-reminder
+      name: dsh-subagent-wait-reminder
