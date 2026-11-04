@@ -36,7 +36,7 @@
 | `README.md` | `2626120D206B3606` | 中文完整文档（含 AI 编写声明） |
 | `scripts\check-*.mjs` ×3 | — | host 契约 / bundle 契约 / 渲染检查（`pnpm check` 三连） |
 | `scripts\verify-pack.mjs` | — | tarball 与源码树逐条比对 |
-| `dist\dsh-ability-strip-0.3.0.tgz` | — | **发布产物，40212 B，不得覆盖不得删除**（profile lockfile 记录其 sha512） |
+| `dist\dsh-ability-strip-0.3.0.tgz` | — | **发布产物，39936 B，9 个条目，不得覆盖不得删除**（profile lockfile 记录其 sha512；2026-11-04 全量复核时纠正了此前误记的 40212 B） |
 
 注：本插件最初自带的 `INSTALL.md` 已升格为**仓库根** [INSTALL.md](../INSTALL.md)（跨插件唯一权威），本插件不再单独持有；本插件的具体命令在 [README.md](README.md)「安装」节。`profile-backups\` 是改 profile 前的会话备份，git 忽略、不随包发布。
 
