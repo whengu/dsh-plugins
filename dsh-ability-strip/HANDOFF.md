@@ -38,7 +38,7 @@
 | `scripts\verify-pack.mjs` | — | tarball 与源码树逐条比对 |
 | `dist\dsh-ability-strip-0.3.0.tgz` | — | **发布产物，40212 B，不得覆盖不得删除**（profile lockfile 记录其 sha512） |
 
-注：曾经的 `INSTALL.md` 已于 2026-11-03 升格为工作区级统一规约 `..\..\dsh-plugin-dev-guide.md`，本插件不再单独持有。`profile-backups\` 是改 profile 前的会话备份，git 忽略、不随包发布。
+注：本插件最初自带的 `INSTALL.md` 已升格为**仓库根** [INSTALL.md](../INSTALL.md)（跨插件唯一权威），本插件不再单独持有；本插件的具体命令在 [README.md](README.md)「安装」节。`profile-backups\` 是改 profile 前的会话备份，git 忽略、不随包发布。
 
 ### 运行副本（只读）：`C:\Users\guwh\.dsh\profiles\web\node_modules\dsh-ability-strip\`
 
@@ -131,4 +131,4 @@ dsh plugin --profile web add "D:\...\dsh-plugins\dsh-ability-strip\dist\dsh-abil
 - [ ] 能复述 §5 至少三条教训的根因（anchorRef、in-flight 补偿、`/api` 通道）。
 - [ ] 知道升级、回滚、卸载各用哪条命令（§6）。
 - [ ] 知道 dsh 升级后要复查哪些耦合点（§6 末尾六条）。
-- [ ] 知道统一规约在 `..\..\dsh-plugin-dev-guide.md`，本插件安装命令的权威出处是规约 §13。
+- [ ] 知道跨插件规约在仓库根 [INSTALL.md](../INSTALL.md)，本插件安装命令的权威出处是 [README.md](README.md)「安装」节。

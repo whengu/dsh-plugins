@@ -87,37 +87,47 @@ Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`—
 
 ## 安装
 
-**当前安装形态（本机 `web` profile，2026-10-28）：`file:` tarball 拷贝安装，不是 link。** profile 的 `package.json` 记录 `dsh-ability-strip: file:<本目录>/dist/dsh-ability-strip-0.3.0.tgz`，`node_modules/dsh-ability-strip` 是 tarball 解开的普通目录（不是符号链接）——之后编辑这份源码树影响不到运行中的安装。为什么坚决不用 `link:`，见文末附录（历史决策记录，不是现状）。
+**当前安装形态（本机 `web` profile）：`file:` tarball 拷贝安装，不是 link。** profile 记录 `dsh-ability-strip-0.3.0.tgz` 的绝对路径，`node_modules/dsh-ability-strip` 是解包的普通目录（非符号链接）——编辑这份源码树影响不到运行中的安装。
 
-从 tarball 安装，让 profile 持有的是一份**拷贝**：
+跨插件铁律（只从 tarball 安装、为什么禁 `link:`、发版流程、排错表）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令。历史决策（为什么改名、为什么拒绝 link）见文末附录。
 
-```sh
+### 打包 / 安装 / 升级
+
+```powershell
+cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip
+pnpm check                                   # 三项检查，必须全部 RESULT: PASS
 pnpm pack --pack-destination dist
-node scripts/verify-pack.mjs dist/dsh-ability-strip-0.3.0.tgz
-dsh plugin --profile web add "<绝对路径>/dist/dsh-ability-strip-0.3.0.tgz"
+node scripts/verify-pack.mjs dist\dsh-ability-strip-<版本>.tgz
+dsh plugin --profile web add "D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip\dist\dsh-ability-strip-<版本>.tgz"
+# 浏览器 Ctrl+F5 硬刷新（有浏览器半边，必须刷新）
 ```
 
-发布一次源码改动 = 重新打包再 add：
+每次发版**递增版本号**；`dist/` 留在原地（profile 记录 tarball 绝对路径，之后 `dsh plugin install` 还要用）。卸载：`dsh plugin --profile web remove dsh-ability-strip`。
 
-```sh
-cd <本目录>
-pnpm check                       # 必须输出 RESULT: PASS
-pnpm pack --pack-destination dist
-node scripts/verify-pack.mjs dist/dsh-ability-strip-0.3.0.tgz
-dsh plugin --profile web add "<绝对路径>/dist/dsh-ability-strip-0.3.0.tgz"
+### 验证
+
+- 页面输入框下方出现 `skill | N | MCP | N`；点击行展开明细、再点收起。
+- `(Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-ability-strip" -Force).LinkType` 为空（普通目录）。
+- `dsh plugin --profile web why dsh-ability-strip` 有记录；`dsh --profile web --dump-config` 能看到本包 entry。
+
+### 回滚
+
+```powershell
+dsh plugin --profile web add "<旧版本 tgz 绝对路径>"   # + Ctrl+F5
 ```
 
-`dist/` 留在原地——profile 记录 tarball 的绝对路径，之后在该 profile 里 `pnpm install` 还需要文件存在。升级就是 pack + 再 `add`；卸载是 `dsh plugin --profile web remove dsh-ability-strip`。
+不要改源码当回滚用——源码与运行副本无任何链接。
 
-`dsh plugin add` 会转发给 profile 内的 pnpm，然后自动把包追加进 `dsh.profile.bundles`，因为 `package.json` 声明了 `dsh.bundle.patch`（见插件管理器的 `reconcile`）。没有这个字段的包只会装成普通依赖，永远不加载。
+### 安装记录
 
-然后**硬刷新页面**（`Ctrl+F5`）。Host 不需要重启：`dsh-hmr` 监视 profile 清单并重组层，但浏览器按 revision 缓存客户端 bundle，所以必须刷新。
+- **2026-10-28**：0.3.0 首装（旧路径 `default-workspace\dsh-ability-strip`）；页面实测 `skill | 22 | MCP | 29`、明细展开/收起、29 个工具名、故障弹窗全过。
+- **2026-11-03**：随单仓库迁移移至 `dsh-plugins\dsh-ability-strip`，profile 从新路径重新登记（相同字节重装，`lib\client.js`/`lib\index.js` 安装副本哈希与源码一致、`LinkType` 为空、`why` 有记录）。
 
-0.3.0 是第一个带真实宿主半边的版本（宿主读工具注册表、MCP 工具数/连接故障、浮层面板），也是第一个走宿主端热重载路径的版本：安装它会让 Loader 加载新的宿主代码，而不只是新的浏览器 bundle。
+`dsh plugin add` 会转发给 profile 内的 pnpm，并自动把包追加进 `dsh.profile.bundles`（因为声明了 `dsh.bundle.patch`）。Host 不需要重启（`dsh-hmr` 重组层），但浏览器按 revision 缓存客户端 bundle，所以必须硬刷新。
 
 ## 附录：为什么拒绝 `link:` 和目录安装（历史决策记录，不是当前形态）
 
-以下记录当初的决策依据：为什么安装介质必须是 tarball、为什么坚决不用 `link:`。**当前安装不是 link**（见上节）。
+以下记录当初的决策依据：为什么安装介质必须是 tarball、为什么坚决不用 `link:`。**当前安装不是 link**（见上节）；跨插件的通用机制分析见仓库根 [INSTALL.md](../INSTALL.md) 第 1 节，这里只留本插件独有的实测记录。
 
 ### 为什么在这里 `link:` 安装不安全——实测，不是假设
 
@@ -143,6 +153,8 @@ pnpm 文档直说：从目录安装"会在 `node_modules` 里创建符号链接�
 
 | 路径 | 角色 |
 | --- | --- |
+| `README.md` | 插件说明 + 本插件安装命令（跨插件规约见仓库根 `../INSTALL.md`） |
+| `HANDOFF.md` | 交接档案（状态快照/哈希/教训/决策记录） |
 | `cordis.patch.yml` | 往 Loader 插入承载本包的 Host 行 |
 | `lib/index.js` | 宿主半边：读 `ctx.tools.schemas()`，服务 `/api/ability-strip` |
 | `lib/client.js` | 浏览器半边：能力条本体，lazy-CJS `__ModuleLoader__` 形态 |

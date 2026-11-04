@@ -44,7 +44,7 @@
 
 `REVIEW-*.md` 与本文（`HANDOFF.md`）是开发期档案，**不在 `package.json` 的 `files` 白名单内、不随包发布**。
 
-> **2026-11-03 单仓库迁移注记**：插件目录已移入 `default-workspace\dsh-plugins\`，profile 已从新路径重新登记（相同字节重装）。上表哈希为**迁移前快照**：`lib\index.js`、`cordis.patch.yml`、`package.json` 未动（哈希仍有效）；`README.md` 安装节抽为 [INSTALL.md](INSTALL.md)、本文路径与引用已更新——两者哈希已变，以当前文件为准。
+> **2026-11-03 单仓库迁移注记**：插件目录已移入 `default-workspace\dsh-plugins\`，profile 已从新路径重新登记（相同字节重装）。上表哈希为**迁移前快照**：`lib\index.js`、`cordis.patch.yml`、`package.json` 未动（哈希仍有效）；`README.md` 与本文的路径/引用已更新——两者哈希已变，以当前文件为准。
 
 ### 运行副本（只读）：`C:\Users\guwh\.dsh\profiles\web\node_modules\dsh-subagent-wait-reminder\`
 
@@ -88,7 +88,7 @@
 - 每次发布必须递增版本号（tarball 不可覆盖，lockfile 记 sha512）；`dist/` 不可删；
 - Host 不需要重启（`dsh-hmr` 重组层）；本插件纯 Host 侧，也不涉及 `Ctrl+F5`。
 
-完整规约见 `..\..\dsh-plugin-dev-guide.md`（工作区根，插件开发统一规约：安装隔离 · 目录骨架 · 单仓库）。
+完整规约见仓库根 `..\INSTALL.md`（[INSTALL.md](../INSTALL.md)，跨插件唯一权威：安装隔离 · 目录骨架 · 单仓库）。本插件的具体命令在 [README.md](README.md)「安装」节。
 
 ## 6. 维护手册
 
@@ -149,7 +149,8 @@ dsh plugin --profile web add "D:\...\dist\dsh-subagent-wait-reminder-0.1.1.tgz"
 | 2026-11-02 | 安装执行 | tarball 装入 web profile，登记形态验证通过 |
 | 2026-11-02/03 | 生产验证 | 单发（热载/冷载）+ 扇出×3 三场景全过 |
 | 2026-11-03 | 开发收尾 | README 补生产验证记录、故障排查、覆盖边界；本文交接 |
-| 2026-11-03 | 单仓库迁移 | 目录移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节重装，安装副本 `lib\index.js` 哈希仍为 `878A22AB18B45554`）；README 安装节抽为 [INSTALL.md](INSTALL.md)；跨目录规约引用改为工作区根 `..\..\dsh-plugin-dev-guide.md` |
+| 2026-11-03 | 单仓库迁移 | 目录移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节重装，安装副本 `lib\index.js` 哈希仍为 `878A22AB18B45554`）；跨插件规约引用改为仓库根 `..\INSTALL.md` |
+| 2026-11-04 | 文档归属纠正 | 规约收入仓库根 `INSTALL.md`；曾经抽出的插件级 `INSTALL.md` 撤销，命令并回 [README.md](README.md)「安装」节（同一主题不再两处维护） |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

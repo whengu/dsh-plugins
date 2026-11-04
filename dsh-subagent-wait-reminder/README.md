@@ -77,14 +77,53 @@
 
 已于 2026-11-02 以 tarball 装入 web profile（0.1.0）；2026-11-03 随单仓库迁移移至 `dsh-plugins\dsh-subagent-wait-reminder` 并从新路径重新登记（相同字节重装，安装副本哈希逐字节一致）。
 
-铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录/link 安装等）见统一规约 [..\..\dsh-plugin-dev-guide.md](../../dsh-plugin-dev-guide.md)；本插件的具体命令（打包 / 安装 / 验证 / 回滚）与历次安装记录见 [INSTALL.md](INSTALL.md)。
+跨插件铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录/link 安装等）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令与记录。本插件是**纯 Host 侧**插件（无 `dsh.client`）：Host 不需要重启，也不涉及浏览器 `Ctrl+F5`。
+
+### 打包前检查（只读源码，不碰 profile）
+
+```powershell
+cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder
+pnpm check
+pnpm pack --pack-destination dist
+tar -tzf dist\dsh-subagent-wait-reminder-<版本>.tgz   # 条目带 package/ 前缀；必须含 package/lib/index.js、package/cordis.patch.yml
+```
+
+### 安装 / 升级（每次发版递增版本号）
+
+```powershell
+dsh plugin --profile web add "D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder\dist\dsh-subagent-wait-reminder-<版本>.tgz"
+```
+
+### 验证登记形态
+
+```powershell
+(Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-subagent-wait-reminder" -Force).LinkType   # 空 = 普通目录（正确）
+dsh plugin --profile web why dsh-subagent-wait-reminder
+dsh --profile web --dump-config    # 应有本包 patch 插入的 entry
+```
+
+功能验证：派发一个子智能体 → 派发结果后应紧跟一条 user 角色 `<system-reminder>`；子智能体结束后完成通知自动到达；全程零 `list_agents`（见「生产验证记录」）。
+
+### 回滚 / 卸载
+
+```powershell
+dsh plugin --profile web add "<旧版本 tgz 绝对路径>"          # 回滚到旧版
+dsh plugin --profile web remove dsh-subagent-wait-reminder   # 彻底移除
+```
+
+不要改源码当回滚用——源码与运行副本无任何链接。
+
+### 安装记录
+
+- **2026-11-02**：0.1.0 首装（旧路径 `default-workspace\dsh-subagent-wait-reminder`）。`pnpm pack` 产物 8471 字节、四文件齐全；`dsh plugin add` 含 lockfile 供应链校验（170 entries）与一次 pnpm 垃圾清理（`+1 -32`，-32 为 extraneous 包）；装后 `LinkType` 为空、`why` 有记录、`dsh.profile.bundles` 末尾自动追加本包。
+- **2026-11-03**：随单仓库迁移移至 `dsh-plugins\dsh-subagent-wait-reminder`，profile 从新路径重新登记（相同字节重装：`LinkType` 为空、安装副本 `lib\index.js` 哈希 `878A22AB18B45554` 与源码一致、`why` 有记录、无 `skipping profile bundle` 警告）。
 
 ## 故障排查：如果派发后没看到提醒
 
 1. 确认装载：`dsh --profile web --dump-config` 输出里应有本包 patch 插入的 entry；`dsh plugin --profile web why dsh-subagent-wait-reminder` 应有记录。
 2. 确认启动日志无 `skipping profile bundle "dsh-subagent-wait-reminder"`（patch 缺失/格式错/版本不兼容都会走这条）。
 3. 确认安装副本完整：`node_modules\dsh-subagent-wait-reminder\lib\index.js` 存在，且哈希与源码一致（对照命令见下方“版本”）。
-4. 确认安装形态：`(Get-Item <安装副本目录> -Force).LinkType` 为空——若是 Junction/SymbolicLink，说明被目录/link 安装污染，按统一规约 [../../dsh-plugin-dev-guide.md](../../dsh-plugin-dev-guide.md) 第 5 节处理。
+4. 确认安装形态：`(Get-Item <安装副本目录> -Force).LinkType` 为空——若是 Junction/SymbolicLink，说明被目录/link 安装污染，按仓库根 [INSTALL.md](../INSTALL.md) 第 5 节处理。
 5. 都正常仍无提醒 → 升级 dsh 后可能命中版本耦合点（README“机制”表所列行号随版本漂移），按新版本重新核对事件契约。
 
 回滚：`dsh plugin --profile web remove dsh-subagent-wait-reminder`（0.1.0 为首个版本，无旧 tgz 可回装）。
