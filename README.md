@@ -53,7 +53,7 @@ dsh-plugins/
 
 ## 历史注记
 
-- **dsh-ability-strip** 曾独立成仓（GitHub `whengu/dsh-ability-strip`，`7e228a0..4b6551c`）。2026-11-03 按「不为单插件另开仓库」的决策解散其 `.git` 并入本仓库；该 GitHub 仓库转为**冻结存档**，不再更新。
+- **dsh-ability-strip** 曾独立成仓（GitHub `whengu/dsh-ability-strip`，`7e228a0..4b6551c`）。2026-11-03 按「不为单插件另开仓库」的决策解散其 `.git` 并入本仓库；**2026-11-04 复用同一个 GitHub 仓库作为本单仓库的远程**（不新建仓库），旧两个提交以 `-s ours` 合并保留在历史中。
 - **dsh-subagent-wait-reminder** 无独立 git 历史，交接事实由其 [HANDOFF.md](dsh-subagent-wait-reminder/HANDOFF.md) 哈希快照接管。
 - 2026-11-03 迁移后两插件的 tgz 绝对路径变化，profile 已从新路径重新登记（相同字节重装，安装副本哈希与源码逐字节一致）。
 - 2026-11-04 规约从仓库外移入本仓库根 `INSTALL.md`（此前放工作区根，导致仓库不自洽、链接一出仓库即死链）。

@@ -341,7 +341,7 @@ dsh-plugins/                       ← 插件单仓库（git）
 4. 在仓库 `README.md` 的索引表加一行；
 5. 写 `HANDOFF.md`（会话收尾的硬性交付物），git 提交。
 
-**迁移记录（2026-11-03）**：dsh-ability-strip 曾独立成仓（GitHub `whengu/dsh-ability-strip`，`7e228a0..4b6551c`，现为冻结存档），按「不为单插件另开仓库」的决策解散其 `.git` 并入本仓库；dsh-subagent-wait-reminder 无 git 历史，由其 HANDOFF 哈希快照接管。两插件目录移动后 tgz 绝对路径变化，profile 从新路径重新 `add`（相同字节重装，安装副本哈希逐字节一致）。
+**迁移记录（2026-11-03/04）**：dsh-ability-strip 曾独立成仓（GitHub `whengu/dsh-ability-strip`，`7e228a0..4b6551c`），按「不为单插件另开仓库」的决策解散其 `.git` 并入本仓库；2026-11-04 复用该 GitHub 仓库作为本单仓库的远程（旧提交保留在历史中），**没有新建仓库**。dsh-subagent-wait-reminder 无 git 历史，由其 HANDOFF 哈希快照接管。两插件目录移动后 tgz 绝对路径变化，profile 从新路径重新 `add`（相同字节重装，安装副本哈希逐字节一致）。
 
 **将来若某插件要独立成干净仓库对外发布**：
 
