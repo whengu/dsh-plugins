@@ -2,8 +2,16 @@
 // builds. This executes the component function, not the browser: it verifies the
 // render logic (chips, sections, failure copy) without any live page.
 //
-// Each case is a FRESH MOUNT: hook storage is reset per case so state cannot leak
-// between scenarios.
+// Each case is a FRESH MOUNT: every component's hook slots are cleared per case, so
+// state cannot leak between scenarios.
+//
+// The hook runtime is deliberately faithful in two ways, because transitions inside
+// one mount are part of the contract being tested (see "live to stale" below):
+//   - slots belong to a component instance, so the detail panel and the strip cannot
+//     read each other's state;
+//   - `useEffect`/`useCallback`/`useMemo` compare dependency arrays, so a mount effect
+//     does not re-fire on every render. Without that, a stub-specific extra read can
+//     overwrite the very transition under test and make a broken feature look fixed.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -87,41 +95,123 @@ const createElement = (type, props, ...children) => {
   node.getBoundingClientRect = () => node.rect;
   return node;
 };
-// --- hook runtime ---------------------------------------------------------
-let hookState = [];
-let hookIndex = 0;
-let effects = [];
+// --- hook runtime (per component instance) --------------------------------
+// Two fidelity rules, both load-bearing for anything that has to observe a change
+// inside one mount:
+//
+//   1. Hook slots belong to a component instance, not to the whole render pass. A
+//      single shared array lets the detail panel's useState() land in the strip's
+//      slot, so the panel opening would silently reset the strip's state.
+//   2. `useEffect`/`useCallback`/`useMemo` compare their dependency arrays, because
+//      React does. Without that, `useCallback` returns a fresh function every render,
+//      the mount effect's `[run, sessionId]` looks changed every time, and the stub
+//      fires an extra non-silent read — which can overwrite the very transition a
+//      test is trying to observe, making a broken feature look fixed.
+const hookStores = new Map();
+let activeStore = null;
+let effectQueue = [];
 let cleanups = [];
 
+/** Shallow dependency comparison, the way React decides to reuse a memo. */
+function sameDeps(previous, next) {
+	if (previous === next) return true;
+	if (!Array.isArray(previous) || !Array.isArray(next)) return false;
+	if (previous.length !== next.length) return false;
+	for (let index = 0; index < previous.length; index += 1) {
+		if (!Object.is(previous[index], next[index])) return false;
+	}
+	return true;
+}
+
+/**
+ * Run one function component inside its own hook frame.
+ * @param type - the component function.
+ * @param props - its props.
+ * @param children - its children (usually empty; the panel passes props.children).
+ * @returns whatever the component returned.
+ */
+function invokeComponent(type, props, children) {
+	let store = hookStores.get(type);
+	if (store === undefined) {
+		store = { slots: [], cursor: 0 };
+		hookStores.set(type, store);
+	}
+	store.cursor = 0;
+	const outerStore = activeStore;
+	activeStore = store;
+	try {
+		return children.length > 0 ? type(props, ...children) : type(props);
+	} finally {
+		activeStore = outerStore;
+	}
+}
+
+/** The slot bag of the component currently rendering. */
+function useSlots() {
+	if (activeStore === null) throw new Error("hook used outside a component");
+	return activeStore;
+}
+
 const React = {
-  createElement,
-  useState(initial) {
-    const i = hookIndex++;
-    if (!(i in hookState)) hookState[i] = typeof initial === "function" ? initial() : initial;
-    const set = (next) => {
-      hookState[i] = typeof next === "function" ? next(hookState[i]) : next;
-    };
-    return [hookState[i], set];
-  },
-  useRef(initial) {
-    const i = hookIndex++;
-    if (!(i in hookState)) hookState[i] = { current: initial };
-    return hookState[i];
-  },
-  useCallback(fn) {
-    hookIndex++;
-    return fn;
-  },
-  // Recompute every render: the stub has no dependency tracking, and the checks
-  // only care about the value, not about referential stability.
-  useMemo(fn) {
-    hookIndex++;
-    return fn();
-  },
-  useEffect(fn) {
-    hookIndex++;
-    effects.push(fn);
-  },
+	createElement,
+	useState(initial) {
+		const store = useSlots();
+		const index = store.cursor++;
+		if (!(index in store.slots)) {
+			store.slots[index] = { value: typeof initial === "function" ? initial() : initial };
+		}
+		// The setter writes the slot rather than a captured array index: that is what
+		// makes a later render of this component see the update while a sibling keeps
+		// its own value.
+		const set = (next) => {
+			const slot = store.slots[index];
+			slot.value = typeof next === "function" ? next(slot.value) : next;
+		};
+		return [store.slots[index].value, set];
+	},
+	useRef(initial) {
+		const store = useSlots();
+		const index = store.cursor++;
+		if (!(index in store.slots)) store.slots[index] = { current: initial };
+		return store.slots[index];
+	},
+	useCallback(fn, deps) {
+		const store = useSlots();
+		const index = store.cursor++;
+		const slot = store.slots[index];
+		if (slot !== undefined && sameDeps(slot.deps, deps)) return slot.fn;
+		store.slots[index] = { fn, deps };
+		return fn;
+	},
+	useMemo(fn, deps) {
+		const store = useSlots();
+		const index = store.cursor++;
+		const slot = store.slots[index];
+		if (slot !== undefined && sameDeps(slot.deps, deps)) return slot.value;
+		const value = fn();
+		store.slots[index] = { value, deps };
+		return value;
+	},
+	useEffect(fn, deps) {
+		const store = useSlots();
+		const index = store.cursor++;
+		const slot = store.slots[index] ?? { deps: undefined, cleanup: undefined };
+		store.slots[index] = slot;
+		// No dependency array means "after every render", exactly like React.
+		if (deps !== undefined && slot.deps !== undefined && sameDeps(slot.deps, deps)) return;
+		slot.deps = deps;
+		effectQueue.push(async () => {
+			// React runs the previous cleanup before re-running an effect.
+			if (typeof slot.cleanup === "function") {
+				const cleanup = slot.cleanup;
+				slot.cleanup = undefined;
+				await cleanup();
+			}
+			const cleanup = await fn();
+			if (typeof cleanup === "function") slot.cleanup = cleanup;
+			return undefined;
+		});
+	},
 };
 
 // A primitive stub that PRESERVES children, so text inside Tag/Button survives.
@@ -171,37 +261,40 @@ exportsObj.apply({
   },
 });
 
-/** Fresh mount: clears hook storage so no state leaks between cases. */
+/** Fresh mount: every component starts with empty slots, as a new tree would. */
 function mount(props) {
-  hookState = [];
-  hookIndex = 0;
-  effects = [];
+  hookStores.clear();
+  activeStore = null;
+  effectQueue = [];
   cleanups = [];
   return render(props);
 }
 
-/** Re-render the current mount (keeps state, re-runs the component). */
+/** Re-render the current mount (keeps per-component state, re-runs the component). */
 function render(props) {
-  hookIndex = 0;
-  effects = [];
-  return Component(props);
+  effectQueue = [];
+  return invokeComponent(Component, props, []);
 }
 
-/** Flush effects of the current mount, recording any cleanup they return. */
+/** Flush the effects recorded by the render pass just completed. */
 async function settle() {
-  const pending = [...effects];
-  for (const fn of pending) {
-    const cleanup = await fn();
-    if (typeof cleanup === "function") cleanups.push(cleanup);
-  }
+  const pending = [...effectQueue];
+  effectQueue = [];
+  for (const fn of pending) await fn();
   await new Promise((r) => setImmediate(r));
 }
 
-/** Run the mount's recorded effect cleanups (what React does on unmount). */
+/** Run every mounted component's effect cleanups (what React does on unmount). */
 async function unmount() {
-  const pending = cleanups.reverse();
-  cleanups = [];
-  for (const fn of pending) await fn();
+  for (const store of [...hookStores.values()].reverse()) {
+    for (const slot of [...store.slots].reverse()) {
+      if (typeof slot?.cleanup === "function") {
+        const cleanup = slot.cleanup;
+        slot.cleanup = undefined;
+        await cleanup();
+      }
+    }
+  }
 }
 
 /** Let a microtask-queued read enter the stub's `load`. */
@@ -218,7 +311,7 @@ function textOf(node) {
   if (typeof node.type === "function") {
     let out;
     try {
-      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+      out = invokeComponent(node.type, node.props, node.children);
     } catch {
       return [];
     }
@@ -242,7 +335,7 @@ function collectElements(node) {
   if (typeof node.type === "function") {
     let out;
     try {
-      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+      out = invokeComponent(node.type, node.props, node.children);
     } catch {
       return [];
     }
@@ -280,7 +373,7 @@ function findDialog(node) {
   if (typeof node.type === "function") {
     let produced;
     try {
-      produced = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+      produced = invokeComponent(node.type, node.props, node.children);
     } catch {
       return undefined;
     }
@@ -312,7 +405,7 @@ function findByLabel(node, label) {
   if (typeof node.type === "function") {
     let out;
     try {
-      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+      out = invokeComponent(node.type, node.props, node.children);
     } catch {
       return undefined;
     }
@@ -358,7 +451,7 @@ function findButton(node, label) {
   if (typeof node.type === "function") {
     let out;
     try {
-      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+      out = invokeComponent(node.type, node.props, node.children);
     } catch {
       return undefined;
     }
@@ -835,7 +928,7 @@ const slowProps = {
 };
 mount(slowProps);
 // Flush the effects so the mount read is STARTED; it stays pending on the gate.
-for (const fn of [...effects]) await fn();
+for (const fn of [...effectQueue]) await fn();
 await flush();
 const callsBeforeOpen = slowCalls;
 check(callsBeforeOpen >= 1, "the mount read must have started");
@@ -923,6 +1016,125 @@ if (typeof computePlacement === 'function') {
   check(high.maxHeight >= 120 && high.maxHeight <= 420, 'the flipped panel height must stay bounded');
 }
 
+
+
+// --- A silent read must carry the strip from live to stale ----------------
+// End-to-end inside ONE mount: the first read is answered by a live agent, then
+// that agent is released and the host serves its remembered answer. Opening the
+// panel is what issues the second (silent) read, exactly as in the browser — so a
+// stub that shared one hook array across components could never show this: the
+// panel's own hooks would reset the strip's cursor and the state would be lost.
+// Nothing here is a source-level assertion; the component really renders twice.
+const livePayload = { ...payloadOk, tools: { ...payloadOk.tools, scope: "agent" } };
+const staleRecordedAt = new Date(Date.now() - 5 * 60000).toISOString();
+const stalePayload = {
+	...payloadOk,
+	tools: { ...payloadOk.tools, scope: "agent", stale: true, recordedAt: staleRecordedAt },
+};
+let transitionCalls = 0;
+const transitionProps = {
+	sessionId: "s-live-to-stale",
+	load: async () => {
+		// The host answers live on the first read and from memory afterwards.
+		transitionCalls += 1;
+		return transitionCalls === 1 ? livePayload : stalePayload;
+	},
+};
+{
+	mount(transitionProps);
+	await settle();
+	await flush();
+	// State 1: the agent is alive, so the chip states the live total.
+	const liveTree = render(transitionProps);
+	check(
+		(markTitle(liveTree, "工具") ?? "").includes("本会话 agent"),
+		`the first read must render as live, saw ${JSON.stringify(markTitle(liveTree, "工具"))}`,
+	);
+	// Opening the panel is the user action that triggers the silent re-read.
+	const openRow = findByLabel(liveTree, "展开明细");
+	check(openRow !== undefined, "the collapsed row must be found before opening");
+	openRow?.props?.onClick?.();
+	await flush();
+	await settle();
+	await flush();
+	check(
+		transitionCalls >= 2,
+		`opening the panel must issue a second read, saw ${transitionCalls} call(s)`,
+	);
+	// State 2: same mount, same component instance — the answer is now a past one.
+	const staleTree = render(transitionProps);
+	const staleTitle = markTitle(staleTree, "工具") ?? "";
+	check(
+		staleTitle.includes("上次活跃时"),
+		`a live->stale transition must reach the collapsed chip, saw ${JSON.stringify(staleTitle)}`,
+	);
+	check(
+		staleTitle.includes("当前无活跃 agent"),
+		"the stale chip must say the agent is gone, not merely show an old number",
+	);
+	// The MCP mark obeys the same rule: a remembered answer is not current state.
+	const staleMcp = textOf(findByLabel(staleTree, "MCP") ?? []).join("");
+	check(
+		!/\d/.test(staleMcp),
+		`a remembered MCP answer must not print a live-looking count, saw ${JSON.stringify(staleMcp)}`,
+	);
+	// The panel dates the reading rather than implying it is now.
+	const stalePanel = textOf(staleTree);
+	check(has(stalePanel, "上次活跃时"), "the open panel must date the remembered reading");
+	check(
+		has(stalePanel, "不是现在的部署注册表"),
+		"the panel must say the remembered list is not the deployment catalog",
+	);
+	// A second silent read keeps the same answer: the transition is idempotent.
+	const callsBefore = transitionCalls;
+	const rowAgain = findByLabel(render(transitionProps), "收起明细");
+	rowAgain?.props?.onClick?.();
+	await flush();
+	await settle();
+	check(
+		(markTitle(render(transitionProps), "工具") ?? "").includes("上次活跃时"),
+		"re-reading a stale answer must not flip it back to looking live",
+	);
+	check(transitionCalls >= callsBefore, "the close/reopen cycle must stay coherent");
+}
+
+
+// --- The panel's state must be its own, not the strip's --------------------
+// The panel is a separate component with its own `useState` (placement) and
+// `useRef` (its DOM node). One shared hook bag makes its `pos` read the strip's
+// slot, and the panel then renders with neither the hidden placeholder nor a real
+// placement — while its render can also overwrite the strip's payload. This pins
+// the isolation itself: without it, the live->stale case above is only accidentally
+// green, because a corrupted render can still produce the right words.
+{
+	mount(okProps);
+	await settle();
+	const opener = findByLabel(render(okProps), "展开明细");
+	opener?.props?.onClick?.();
+	await flush();
+	// Let the panel's placement effect run, so its own state has been written.
+	await settle();
+	const tree = render(okProps);
+	const panelNode = collectElements(tree).find((n) => n?.props?.id === "ability-strip-detail");
+	check(panelNode !== undefined, "the open panel must carry its own id");
+	const panelStyle = panelNode?.props?.style ?? {};
+	// Exactly one of the two honest states: not measured yet (hidden placeholder),
+	// or measured (a numeric height plus an anchor edge). Anything else is a panel
+	// reading state that belongs to another component.
+	const hiddenPending = panelStyle.visibility === "hidden";
+	const placed =
+		typeof panelStyle.maxHeight === "number" &&
+		(typeof panelStyle.bottom === "number" || typeof panelStyle.top === "number");
+	check(
+		hiddenPending || placed,
+		`the panel's placement state must be its own, saw ${JSON.stringify(panelStyle)}`,
+	);
+	// And the strip's own state must survive the panel's render.
+	check(
+		(markTitle(tree, "工具") ?? "").includes("本会话 agent"),
+		"rendering the panel must not disturb the strip's payload",
+	);
+}
 
 // --- No markdown leaks into the rendered text ------------------------------
 // Panel copy is a plain JS string, not markdown: `**bold**` would print its

@@ -565,9 +565,26 @@ function computePlacement(rect, viewport) {
 				if (prevSkills[index]?.whenToUse !== nextSkills[index]?.whenToUse) return false;
 				if (prevSkills[index]?.modelInvocable !== nextSkills[index]?.modelInvocable) return false;
 			}
-			// MCP is the field that changes in practice, and the reason the poll
-			// exists: compare the server list, each server's tool count, and the tool
-			// names (a rename is visible in the panel).
+			// The tools block carries claims the panel prints verbatim: which view
+			// answered, whether it is a past reading, the total, and the non-MCP list.
+			// Comparing only the server roster swallowed exactly the transitions this
+			// version exists to show (live -> stale, global -> agent) whenever the roster
+			// stayed equal — which is always true for a profile with no MCP tools, and
+			// true here because the host's remembered answer keeps the same servers.
+			if (previous.tools?.scope !== next.tools?.scope) return false;
+			if (previous.tools?.stale !== next.tools?.stale) return false;
+			if (previous.tools?.recordedAt !== next.tools?.recordedAt) return false;
+			if ((previous.tools?.totalTools ?? 0) !== (next.tools?.totalTools ?? 0)) return false;
+			const prevLocal = previous.tools?.local ?? [];
+			const nextLocal = next.tools?.local ?? [];
+			if (prevLocal.length !== nextLocal.length) return false;
+			for (let index = 0; index < prevLocal.length; index += 1) {
+				if (prevLocal[index]?.name !== nextLocal[index]?.name) return false;
+				if (prevLocal[index]?.description !== nextLocal[index]?.description) return false;
+			}
+			// MCP is the field that changes in practice: compare the server list, each
+			// server's tool count, and each tool by value (two fetches never share
+			// objects, so a reference compare would say "changed" every single time).
 			const before = previous.tools?.servers ?? [];
 			const after = next.tools?.servers ?? [];
 			if (before.length !== after.length) return false;
@@ -968,6 +985,11 @@ function computePlacement(rect, viewport) {
 			const acknowledgedFault = React.useRef(void 0);
 			// The floating panel is placed from this row's live rect.
 			const anchorRef = React.useRef(null);
+			// The focusable element: the row carries `role="button"` and `tabIndex`, while
+			// the anchor above it is a plain positioning div. Restoring focus must target
+			// THIS node — pointing it at the anchor is a silent no-op, because a div
+			// without a tab index cannot take focus.
+			const rowRef = React.useRef(null);
 
 			// The renderer caches an inject face per registration × scope binding, so
 			// `load` is identity-stable for one Session. A ref keeps the effect keyed
@@ -1722,6 +1744,7 @@ function computePlacement(rect, viewport) {
 				h(
 					"div",
 					{
+						ref: rowRef,
 						role: "button",
 						tabIndex: 0,
 						"aria-expanded": open,
@@ -1780,7 +1803,7 @@ function computePlacement(rect, viewport) {
 								// A timeout lets the portal unmount before the anchor is
 								// refocused; focusing an element on the same tick is fine too,
 								// so this is defensive, not load-bearing.
-								setTimeout(() => anchorRef.current?.focus?.(), 0);
+								setTimeout(() => rowRef.current?.focus?.(), 0);
 							},
 								loadedAt: payload.loadedAt,
 								loading: state.phase === "loading",
