@@ -1,6 +1,6 @@
 # dsh-subagent-wait-reminder
 
-状态：**已安装并实测通过**（web profile，0.1.0，2026-11-02 安装、11-02/03 实测）。静态评审三轮（FAIL→PASS→PASS），真实会话验证三类场景全过（见“生产验证记录”）。
+状态：**已安装并实测通过**（线上 web profile 0.1.0，2026-11-02 安装、11-02/03 实测）。源码现为 0.1.1：**只新增测试，`lib/index.js` 逐字节未改**。静态评审三轮（FAIL→PASS→PASS），真实会话验证三类场景全过（见“生产验证记录”），另有 25 个行为测试（见“验证状态”）。
 
 > 注：`REVIEW-*.md` 是开发期评审档案，**不在 `files` 白名单内、不随包发布**——本文件中的评审报告链接只在源码目录有效，安装副本内是死链，属预期。
 
@@ -45,6 +45,20 @@
 
 ## 验证状态
 
+- **行为测试（0.1.1 新增）**：`pnpm test` → 25 个用例全绿。实现是 [test/reminder.test.mjs](test/reminder.test.mjs)，只用 `node:test` + `node:assert`，**零第三方依赖**。测试不启动 dsh：用桩 context 收集 `ctx.on` 注册的监听器，再按运行时的方式直接调用 `(exec, result, next)` / `(payload, next)`，对返回的决策断言。
+- `pnpm check` 现在 = `node --check lib/index.js` + 上述 25 个用例，**一条命令跑完**（`pnpm test` 只跑测试）。两个脚本都在 `package.json` 里、Windows 下可直接执行（显式文件路径，不依赖 shell 展开 glob）。
+- 覆盖的机制（每个用例对应一条）：工具分类（`subagent` / `subagent_fork` / `list_agents`）；派发工具改名后用固定返回文本 `started subagent ` 兜底；只扫描 text 块、且前缀必须在开头；`result.isError === true` 时三种动作都不注入；无关工具原样返回下游决策、不克隆；`exec.agent` 缺失时不注入也不抛错；step 内去重（同一步扇出 3 次只 1 条、两种派发名共用闩、按 agent 分开、dispatch 与 poll 互不影响）；`agent/pre-step` 清闩后新 step 重新注入、且只清自己那个 agent；注入消息形状（user 角色、`source.kind`/`form: 'notice'`/`summary`、id 唯一）；下游 `additionalContexts` 保留在提醒之后且下游决策不被修改；accept / block 两种变体都保持原样；`next()` 对每次调用恰好执行一次。
+- **测试自身的有效性（变异验证）**：分别改坏五处机制后重跑，对应用例全部变红；还原后 `lib/index.js` 与改前**逐字节一致**（7268 B，SHA256 前 16 位 `878A22AB18B45554`）：
+
+  | 改坏的机制 | 变红的用例 |
+  |---|---|
+  | 去掉 step 闩（每次都注入） | 6 个（扇出、两种派发名、按 agent、他 agent 的 pre-step、dispatch/poll 分开、重复 poll） |
+  | 去掉 `result.isError` 跳过 | 4 个（`subagent`、`subagent_fork`、形似渲染文本的失败调用及父用例） |
+  | 去掉文本兜底 | 2 个（改名命中、text 块过滤） |
+  | 去掉 `agent/pre-step` 清闩 | 1 个（跨步重新注入） |
+  | 去掉 `exec.agent` 守卫 | 2 个（报 `TypeError: Invalid value used as weak map key`，证明该守卫是承重的） |
+
+- **未覆盖（如实列出）**：真实 dsh 事件契约（事件是否按声明送达、`additionalContexts` 是否真被注册表合入结果并到达 step 边界）；真实 agent 生命周期与 `Agent` 对象；session log 对自定义 `source.kind` 的落盘校验；`cordis.patch.yml` 的装载与 `engines.dsh` 兼容性；真实模型是否会照提醒行事。测试证明的是**插件自身逻辑**，不是运行时行为——后者仍只能靠“生产验证记录”与升级时的契约核对。
 - 已执行：`node --check lib/index.js` → OK。
 - 已执行：字段级类型核对（上表逐条对照 api-catalog 声明），确认没有“凭同名猜测字段”。
 - 已执行：三轮独立静态评审，v1 FAIL → v2 PASS → v3 PASS（v3 覆盖可安装形态与 step 闩，报告见 [REVIEW-v3-PASS.md](REVIEW-v3-PASS.md)）。
@@ -83,7 +97,7 @@
 
 ```powershell
 # 站在本插件目录里（仓库 clone 在哪都行，各机器不必一致）
-pnpm check
+pnpm check      # 语法检查 + 25 个行为测试，任一失败即 exit 1
 pnpm pack --pack-destination dist
 tar -tzf dist\dsh-subagent-wait-reminder-<版本>.tgz   # 条目带 package/ 前缀；必须含 package/lib/index.js、package/cordis.patch.yml
 ```
@@ -140,11 +154,12 @@ dsh plugin --profile web remove dsh-subagent-wait-reminder                    # 
 
 ## 版本
 
+- 0.1.1 — **只加测试，`lib/index.js` 逐字节未改**（仍 7268 B / `878A22AB18B45554`）。新增 `test/reminder.test.mjs`（25 个用例）、`pnpm test`，`pnpm check` 升级为“语法 + 行为测试”。测试不在 `files` 白名单内，不进包。**线上仍是 0.1.0**（本次未打包、未安装）；要上线按上面流程装 0.1.1 并**重启 Host**——行为与 0.1.0 完全相同。
 - 0.1.0 — 首个可安装形态（含 `dsh.bundle.patch` 与包内 `cordis.patch.yml`）。2026-11-02 装入 web profile，11-02/03 实测通过。
 
 ### 运行副本与源码的同步状态
 
-本次开发收尾时在源码目录更新了 README（补生产验证记录等），**安装副本里的 README 仍是打包时的旧版**——按隔离原则这无害（文档不影响行为），但两份 README 已有差异。下次因任何原因发新版本时（0.1.1+），新版会自然带上；若希望立即同步，走一遍“新版本号 → `pnpm pack` → `add`”即可。
+本次开发收尾时在源码目录更新了 README（补生产验证记录等），**安装副本里的 README 仍是打包时的旧版**——按隔离原则这无害（文档不影响行为），但两份 README 已有差异。源码现为 0.1.1（只新增测试与文档），线上副本仍是 0.1.0；两边 `lib/index.js` **逐字节一致**（`878A22AB18B45554`），因此行为相同。要上线 0.1.1 需走一遍“新版本号 → `pnpm pack` → `add` → **重启 Host**”。
 
 对照安装副本与源码是否一致（两行哈希相同 = 可执行代码一致；基线 `878A22AB18B45554`）：
 

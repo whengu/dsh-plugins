@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-wait-reminder",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Injects a system-reminder after subagent dispatch or list_agents polling: wait for the completion notice instead of polling.",
   "type": "module",
@@ -20,7 +20,8 @@
     }
   },
   "scripts": {
-    "check": "node --check lib/index.js"
+    "check": "node --check lib/index.js && node --test test/reminder.test.mjs",
+    "test": "node --test test/reminder.test.mjs"
   },
   "files": [
     "lib/index.js",

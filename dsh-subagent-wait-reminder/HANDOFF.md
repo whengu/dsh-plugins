@@ -25,6 +25,8 @@
 | 装载 | 已进 `dsh.profile.bundles`，重启冷载实测有效 |
 | 生产验证 | 三场景全过（2026-11-02/03），零 `list_agents` 轮询 |
 | 静态评审 | 三轮：v1 FAIL → v2 PASS → v3 PASS（v3 覆盖可安装形态与 step 闩） |
+| 源码版本 | 0.1.1（2026-11-09）：只新增测试与文档，`lib/index.js` 逐字节未改。**未打包、未安装**，线上仍 0.1.0 |
+| 自动化测试 | `pnpm test` 25 个用例全绿；变异验证 5/5 命中（见 §6） |
 | 待办 | 无阻塞事项；可选事项见 §7 |
 
 ## 3. 资产地图（哈希为 SHA256 前 16 位，交接时点快照）
@@ -35,18 +37,21 @@
 
 | 文件 | 哈希 | 说明 |
 |---|---|---|
-| `lib\index.js` | `878A22AB18B45554` | **唯一可执行代码**，v3 评审对象，7268 B，零外部依赖（仅 node:crypto） |
+| `lib\index.js` | `878A22AB18B45554` | **唯一可执行代码**，v3 评审对象，7268 B，零外部依赖（仅 node:crypto）。0.1.1 未动 |
 | `cordis.patch.yml` | `503F34696620EF36` | bundle patch（`- insert: [{id, name}]`），安装时由 dsh 自动登记 |
-| `package.json` | `BD4E92680D4DC35A` | 含 `dsh.bundle.patch` 声明（必需，否则只装不加载）；`engines.dsh >=0.2.1-rc.5` |
-| `README.md` | `B07A093872FF9AFB` | 完整文档：机制表（逐条源码行号）、限制、边界、验证记录、故障排查 |
+| `package.json` | `ECA8A8061F15BA46` | 含 `dsh.bundle.patch` 声明（必需，否则只装不加载）；`engines.dsh >=0.2.1-rc.5`；0.1.1 加 `test`/`check` 脚本 |
+| `test\reminder.test.mjs` | `997445B32A77D607` | 0.1.1 新增：25 个行为用例，`node:test` + `node:assert`，20823 B，零第三方依赖，**不在 `files` 内** |
+| `README.md` | `2C6790E5E2BDD65E` | 完整文档：机制表（逐条源码行号）、限制、边界、验证记录、故障排查 |
 | `REVIEW-v1-FAIL.md` | `3585DB4BE0B3B6E1` | v1 评审：抓出静默 no-op（见 §5 教训一） |
 | `REVIEW-v2-PASS.md` | `5427BDCDC82CB02A` | v2 评审：端到端闭合；裁决出扇出重复注入问题 |
 | `REVIEW-v3-PASS.md` | `D948D1F8F435E1B9` | v3 评审：安装链路逐行核实 + step 闩 + 全回归 |
-| `dist\dsh-subagent-wait-reminder-0.1.0.tgz` | `589D7BB0C41B8A56` | **发布产物，8471 B，不得覆盖不得删除**（profile lockfile 记录其 sha512，dependencies 引用其绝对路径） |
+| `dist\dsh-subagent-wait-reminder-0.1.0.tgz` | `589D7BB0C41B8A56` | **发布产物，8471 B，不得覆盖不得删除**（profile lockfile 记录其 sha512，dependencies 引用其绝对路径）。0.1.1 未打包，`dist\` 无新增 |
 
 `REVIEW-*.md` 与本文（`HANDOFF.md`）是开发期档案，**不在 `package.json` 的 `files` 白名单内、不随包发布**。
 
-> **2026-11-03 单仓库迁移注记**：插件目录已移入 `default-workspace\dsh-plugins\`，profile 已从新路径重新登记（相同字节重装）。上表哈希为**迁移前快照**：`lib\index.js`、`cordis.patch.yml`、`package.json` 未动（哈希仍有效）；`README.md` 与本文的路径/引用已更新——两者哈希已变，以当前文件为准。
+> **2026-11-03 单仓库迁移注记**：插件目录已移入 `default-workspace\dsh-plugins\`，profile 已从新路径重新登记（相同字节重装）。上表哈希为**当前工作区快照**（已含 2026-11-09 的 0.1.1 更新，见下一条注记）；迁移当时 `lib\index.js`、`cordis.patch.yml`、`package.json` 均未动，`README.md` 与本文的路径/引用已更新。
+
+> **2026-11-09 测试补齐（0.1.1）注记**：只新增测试与文档。`lib\index.js`（`878A22AB18B45554` / 7268 B）与 `cordis.patch.yml` **逐字节未改**；`package.json` 仅改版本号与 `scripts`，`README.md` 更新验证段，新增 `test\reminder.test.mjs`。测试**不在 `files` 白名单**（不进包，tarball 形态与 0.1.0 相同）。本次**未打包、未安装**，线上仍 0.1.0。
 
 ### 运行副本（只读）：`$DSH_HOME/profiles/web/node_modules/dsh-subagent-wait-reminder/`
 
@@ -98,9 +103,16 @@
 
 ### 日常验证（改完任何东西后做一次）
 
-1. `pnpm check`（= `node --check lib/index.js`）→ exit 0。
-2. 真实派发一个子智能体 → 派发结果后应紧跟一条 user 角色 `<system-reminder>`（内容即 README「作用」引文）。
-3. 子智能体结束后应自动收到完成通知，全程不应有任何 `list_agents` 调用。
+1. `pnpm check`（= `node --check lib/index.js` + `node --test test/reminder.test.mjs`）→ exit 0，**25 个行为用例全绿**。
+2. `pnpm test` → 只跑测试（调逻辑或改测试时用；与上一步的测试部分是同一文件，显式文件名，Windows 下不依赖 shell 展开 glob）。
+3. 真实派发一个子智能体 → 派发结果后应紧跟一条 user 角色 `<system-reminder>`（内容即 README「作用」引文）。
+4. 子智能体结束后应自动收到完成通知，全程不应有任何 `list_agents` 调用。
+
+测试证明的是**插件自身逻辑**（分类、文本兜底、isError 跳过、step 闩、注入消息形状），**不覆盖**真实事件契约、真实 agent 生命周期与 session log 校验——那部分仍靠第 3、4 步和升级时的契约核对。
+
+#### 测试是否真的有牙（变异验证，0.1.1 已做）
+
+改坏一处机制 → 对应用例必须变红 → 还原后 `lib/index.js` 必须与改前**逐字节一致**（`878A22AB18B45554` / 7268 B）。已做的五条：去掉 step 闩（6 个用例红）、去掉 `result.isError` 跳过（4 个）、去掉文本兜底（2 个）、去掉 `agent/pre-step` 清闩（1 个）、去掉 `exec.agent` 守卫（2 个，报 `TypeError: Invalid value used as weak map key`）。改逻辑后照此自查，别只看“跑绿了”。
 
 ### 升级发版
 
@@ -156,11 +168,12 @@ dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-0.1.1.tgz
 | 2026-11-03 | 单仓库迁移 | 目录移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节重装，安装副本 `lib\index.js` 哈希仍为 `878A22AB18B45554`）；跨插件规约引用改为仓库根 `..\INSTALL.md` |
 | 2026-11-04 | 文档归属纠正 | 规约收入仓库根 `INSTALL.md`；曾经抽出的插件级 `INSTALL.md` 撤销，命令并回 [README.md](README.md)「安装」节（同一主题不再两处维护） |
 | 2026-11-09 | **dsh 升级兼容复核（0.2.1-rc.5 → 0.2.2-rc.1）** | **兼容，无需改代码**。功能证据：派发子智能体后立即收到本插件注入的 `<system-reminder>`，注入链路完整。契约核对：`tools/post-execute` 签名 `(exec, result, next)` 未变（api-catalog L5220）；`PostToolDecision.additionalContexts` 未变；`ToolExecutionInput.name`/`.agent`、`ToolExecutionSuccess.isError`/`.content` 未变；`started subagent ` 兜底文本未变（dsh-tool-subagent）；`list_agents` 工具名未变（`name: "list_agents"`）；官方 `dsh-repeat-tool-reminder` 仍用同一套 API。**文档漂移**：§6 曾引用 `dsh-tool-subagent-control/lib/types/list-agents.js`，该子路径已变为 `lib/index.js`（包与工具名均未变） |
+| 2026-11-09 | **补齐行为测试（0.1.1）** | 新增 `test/reminder.test.mjs`（25 个用例，`node:test` + `node:assert`，零第三方依赖），`pnpm check` 升级为「语法检查 + 行为测试」，新增 `pnpm test`。**生产代码一行未改**：`apply(ctx)` 已是唯一接缝，测试用桩 context 直接驱动 `tools/post-execute` / `agent/pre-step` 监听器，无需导出内部函数。变异验证 5/5：去掉闩 / isError 跳过 / 文本兜底 / pre-step 清闩 / agent 守卫，各自让对应用例变红，还原后 `lib/index.js` 逐字节一致。**未打包、未安装**，线上仍 0.1.0；发 0.1.1 时按 §5 教训三**必须重启 Host** 才生效（本次 `lib` 未变，行为与 0.1.0 相同） |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 
 - [ ] 通读 README「机制」表与本文 §5，能复述 v1 FAIL 的类型级根因。
-- [ ] `pnpm check` 通过；源码 `lib/index.js` 哈希 = `878A22AB18B45554`。
+- [ ] `pnpm check` 通过（25 个行为用例全绿）；源码 `lib/index.js` 哈希 = `878A22AB18B45554`。
 - [ ] `dsh plugin --profile web why dsh-subagent-wait-reminder` 有记录。
 - [ ] 派发一个子智能体，亲眼确认提醒出现在下一次请求、完成通知自动到达、全程零 `list_agents`。
 - [ ] 知道升级、回滚、卸载各用哪条命令（§6）。
