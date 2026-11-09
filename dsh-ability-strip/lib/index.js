@@ -93,18 +93,46 @@ export function splitMcpToolName(toolName) {
  * @returns one entry per server with a registered tool, sorted by name.
  */
 export function summarizeMcpTools(schemas) {
-	/** @type {Map<string, string[]>} */
+	/** @type {Map<string, { name: string, description: string }[]>} */
 	const byServer = new Map();
 	for (const schema of Array.isArray(schemas) ? schemas : []) {
 		const split = splitMcpToolName(schema?.name);
 		if (split === void 0) continue;
+		const entry = toolEntry(split.tool, schema);
 		const tools = byServer.get(split.server);
-		if (tools === void 0) byServer.set(split.server, [split.tool]);
-		else tools.push(split.tool);
+		if (tools === void 0) byServer.set(split.server, [entry]);
+		else tools.push(entry);
 	}
 	return [...byServer.entries()]
-		.map(([server, tools]) => ({ server, tools: tools.sort() }))
+		.map(([server, tools]) => ({
+			server,
+			tools: tools.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+		}))
 		.sort((left, right) => (left.server < right.server ? -1 : left.server > right.server ? 1 : 0));
+}
+
+/**
+ * Longest description carried to the browser, in characters.
+ *
+ * The catalog is the only place a tool's own words exist, and the panel shows them
+ * next to the name — that is the answer to "what is this tool actually for". The
+ * cap is a wire bound, not a judgement: a pathological description cannot turn one
+ * panel read into a megabyte, and the panel says when it cut a line.
+ */
+export const MAX_DESCRIPTION_CHARS = 400;
+
+/**
+ * One tool as the panel needs it: name plus its own description.
+ * @param name - the tool name without any MCP server prefix.
+ * @param schema - the schema that carried it.
+ * @returns the entry, with the description trimmed and capped.
+ */
+function toolEntry(name, schema) {
+	const raw = typeof schema?.description === "string" ? schema.description.trim() : "";
+	return {
+		name,
+		description: raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw,
+	};
 }
 
 /**
@@ -116,19 +144,22 @@ export function summarizeMcpTools(schemas) {
  * what is actually known (not an MCP server) avoids inventing a distinction the
  * registry does not expose.
  * @param schemas - model-facing tool schemas from `ctx.tools.schemas(...)`.
- * @returns per-server MCP tools plus the sorted non-MCP tool names.
+ * @returns per-server MCP tools plus the sorted non-MCP tools, each with its description.
  */
 export function summarizeTools(schemas) {
-	/** @type {string[]} */
+	/** @type {{ name: string, description: string }[]} */
 	const local = [];
 	for (const schema of Array.isArray(schemas) ? schemas : []) {
 		const name = schema?.name;
 		if (typeof name !== "string" || name.length === 0) continue;
 		// A name that parses as an MCP tool belongs to a server, not to `local`.
 		if (splitMcpToolName(name) !== void 0) continue;
-		local.push(name);
+		local.push(toolEntry(name, schema));
 	}
-	return { servers: summarizeMcpTools(schemas), local: local.sort() };
+	return {
+		servers: summarizeMcpTools(schemas),
+		local: local.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+	};
 }
 
 /**

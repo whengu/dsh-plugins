@@ -434,6 +434,15 @@ window.__ModuleLoader__.load({
 
 		/** The skill count: tabular figures so the width does not jitter per value. */
 		const COUNT = { fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums", minWidth: 10 };
+		/**
+		 * Layout for one collapsed mark: icon, then a number or a state glyph.
+		 *
+		 * The row carries no word labels on purpose. The dock is a shared flex row
+		 * with other widgets, so every label cost width the numbers needed; each mark
+		 * is now identified by its own glyph (sparkle / globe / wrench) plus an
+		 * `aria-label` and a tooltip, so the meaning survives without the text.
+		 */
+		const CHIP = { display: "flex", alignItems: "center", gap: 3, minWidth: 0, flex: "0 0 auto" };
 
 		/**
 		 * Hairline divider drawn from the inherited text color, so it follows the
@@ -669,8 +678,10 @@ window.__ModuleLoader__.load({
 				if (value?.ok === false) {
 					return { error: typeof value.error === "string" ? value.error : "宿主读取工具清单失败" };
 				}
+				// Tool entries are normalized where they are rendered, not here: the
+				// component must not assume which shape its payload arrived in.
 				return {
-					servers: value?.servers ?? [],
+					servers: Array.isArray(value?.servers) ? value.servers : [],
 					totalTools: value?.totalTools ?? 0,
 					// Non-MCP tools. The schemas carry no origin field, so this bucket
 					// means "not an MCP server's tool", not "ships with the Harness".
@@ -778,29 +789,68 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * One non-MCP tool: its registered name only.
+		 * Normalize one tool entry.
 		 *
-		 * Names, not schemas: the catalog's descriptions are kilobytes each (a
-		 * 15-tool plugin cost ~13.5 KB of schema), and the panel answers "what is
-		 * offered", not "what does each parameter mean". The tooltip keeps the full
-		 * name visible when the row is narrow.
+		 * This version's host sends `{ name, description }`. An older host still
+		 * installed sends bare name strings, and the two halves update at different
+		 * times — the browser half on a refresh, the host half only on a restart — so
+		 * that window is real. Normalizing here means such a payload degrades to
+		 * "names, no descriptions" instead of rendering rows of `undefined`.
+		 * @param tool - a `{ name, description }` entry or a bare name string.
+		 * @returns an entry whose fields are always strings.
 		 */
-		function ToolRow({ name }) {
+		function asTool(tool) {
+			if (typeof tool === "string") return { name: tool, description: "" };
+			return {
+				name: typeof tool?.name === "string" ? tool.name : "",
+				description: typeof tool?.description === "string" ? tool.description : "",
+			};
+		}
+
+		/**
+		 * One non-MCP tool: name plus the tool's own description.
+		 *
+		 * The description is the tool author's own words, taken from the schema that
+		 * the model sees — so this answers "what is this for" without inventing
+		 * anything. It is clamped to two lines so a long description cannot push the
+		 * rest of the list out of view; the full text stays in the tooltip.
+		 */
+		function ToolRow({ tool }) {
 			return h(
 				"div",
 				{
-					title: name,
+					title: tool.description === "" ? tool.name : `${tool.name}\n${tool.description}`,
 					style: {
-						fontSize: 12,
+						display: "flex",
+						flexDirection: "column",
+						gap: 1,
 						padding: "4px 0",
 						borderBottom: "1px solid currentColor",
 						borderBottomColor: "color-mix(in srgb, currentColor 10%, transparent)",
-						overflow: "hidden",
-						textOverflow: "ellipsis",
-						whiteSpace: "nowrap",
 					},
 				},
-				name,
+				h(
+					"span",
+					{ style: { fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+					tool.name,
+				),
+				tool.description === ""
+					? null
+					: h(
+							"span",
+							{
+								style: {
+									fontSize: 11,
+									opacity: 0.62,
+									lineHeight: 1.45,
+									display: "-webkit-box",
+									WebkitLineClamp: 2,
+									WebkitBoxOrient: "vertical",
+									overflow: "hidden",
+								},
+							},
+							tool.description,
+						),
 			);
 		}
 
@@ -1009,7 +1059,11 @@ window.__ModuleLoader__.load({
 			// registers none, so this is real connectivity, not configuration.
 			// Memoized because the dock re-renders on every composer keystroke.
 			const connectedServers = React.useMemo(
-				() => payload?.tools?.servers ?? [],
+				() =>
+					(payload?.tools?.servers ?? []).map((server) => ({
+						server: server?.server,
+						tools: (Array.isArray(server?.tools) ? server.tools : []).map(asTool),
+					})),
 				[payload],
 			);
 			const connected = connectedServers.length > 0;
@@ -1075,17 +1129,38 @@ window.__ModuleLoader__.load({
 			// three states on purpose: not-read-yet (…), failed (读取失败), and a real
 			// answer. Collapsing the first two into "0"/"无" would report a fact the
 			// strip has not observed.
+			// One sentence for the MCP mark's tooltip and the panel heading. The
+			// collapsed row no longer prints it: the dock is a shared row, so the
+			// state is a glyph there and the words live in the tooltip and the detail.
+			const mcpStateLabel =
+				payload === void 0
+					? "读取中"
+					: payload.tools?.error !== void 0
+						? "工具清单读取失败"
+						: connected
+							? `${totalMcpTools} 个工具`
+							: mcpFault
+								? "连接故障"
+								: "未连接";
+
 			const renderSkillChip = () => {
 				const skills = payload?.skills;
 				let body;
-				if (skills?.error !== void 0) body = h(ui.Tag, { tone: "danger" }, "读取失败");
+				if (skills?.error !== void 0)
+					body = h(ui.IconWarningOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
 				else if (skillCount === void 0) body = h("span", MUTED, "…");
 				else body = h("span", COUNT, String(skillCount));
 				return h(
 					"span",
-					{ style: { display: "flex", alignItems: "center", gap: 3, minWidth: 0 } },
+					{
+						style: CHIP,
+						title: skills?.error !== void 0 ? "技能清单读取失败" : "本会话可见的 skill 数量",
+						"aria-label": "技能",
+					},
 					h(ui.IconSkillOutlineRegular, { size: 12 }),
-					h("span", { style: { fontSize: 11, opacity: 0.7 } }, "skill"),
 					body,
 				);
 			};
@@ -1094,40 +1169,32 @@ window.__ModuleLoader__.load({
 				let body;
 				if (payload === void 0) body = h("span", MUTED, "…");
 				else if (payload.tools?.error !== void 0)
+					body = h(ui.IconWarningOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
+				else if (connected)
 					body = h(
 						"span",
-						{ style: { fontSize: 11, color: "var(--dsw-alias-state-error-primary)" } },
-						"读取失败",
+						{ style: { ...COUNT, color: "var(--dsw-alias-state-success-primary)" } },
+						String(totalMcpTools),
 					);
+				else if (mcpFault)
+					// Red, not amber: amber reads as "not configured", red as
+					// "configured and broken".
+					body = h(ui.IconWarningOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
 				else
-					body = h(
-						"span",
-						{
-							// Colour carries the answer; the word repeats it for anyone who
-							// cannot rely on colour alone. A fault is red, not amber: amber
-							// reads as "not configured", red as "configured and broken".
-							style: {
-								display: "flex",
-								alignItems: "center",
-								gap: 3,
-								fontSize: 11,
-								color: connected
-									? "var(--dsw-alias-state-success-primary)"
-									: mcpFault
-										? "var(--dsw-alias-state-error-primary)"
-										: "var(--dsw-alias-state-warn-primary)",
-							},
-						},
-						h(connected ? ui.IconCheckCircleOutlineRegular : ui.IconCloseOutlineRegular, {
-							size: 12,
-						}),
-						connected ? String(totalMcpTools) : mcpFault ? "连接故障" : "未连接",
-					);
+					body = h(ui.IconCloseOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-warn-primary)" },
+					});
 				const label = h(
 					"span",
-					{ style: { display: "flex", alignItems: "center", gap: 3, minWidth: 0 } },
+					{ style: CHIP, title: `MCP：${mcpStateLabel}`, "aria-label": "MCP" },
 					h(ui.IconGlobeOutlineRegular, { size: 12 }),
-					h("span", { style: { fontSize: 11, opacity: 0.7 } }, "MCP"),
 					body,
 				);
 				// A fault is the one case where the mark must be actionable: clicking it
@@ -1145,10 +1212,7 @@ window.__ModuleLoader__.load({
 						title: "MCP 连接故障：点击查看原因",
 						"aria-label": "MCP 连接故障：点击查看原因",
 						style: {
-							display: "flex",
-							alignItems: "center",
-							gap: 3,
-							minWidth: 0,
+							...CHIP,
 							padding: 0,
 							border: "none",
 							background: "none",
@@ -1163,24 +1227,26 @@ window.__ModuleLoader__.load({
 
 			// The third mark: how many tools the model is actually offered. The browser
 			// cannot see the registry, so this number arrives with the same payload as
-			// the MCP half — and it is the total, not the MCP subset, which is what
-			// makes "28 MCP tools out of 40 total" readable at a glance.
+			// the MCP half — and it is the total, not the MCP subset, so the gap between
+			// the two marks is the non-MCP tool count without printing it.
 			const renderToolsChip = () => {
 				const tools = payload?.tools;
 				let body;
 				if (payload === void 0) body = h("span", MUTED, "…");
 				else if (tools?.error !== void 0)
-					body = h(
-						"span",
-						{ style: { fontSize: 11, color: "var(--dsw-alias-state-error-primary)" } },
-						"读取失败",
-					);
+					body = h(ui.IconWarningOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
 				else body = h("span", COUNT, String(tools?.totalTools ?? 0));
 				return h(
 					"span",
-					{ style: { display: "flex", alignItems: "center", gap: 3, minWidth: 0 } },
+					{
+						style: CHIP,
+						title: tools?.error !== void 0 ? "工具清单读取失败" : "模型被提供的工具总数（含 MCP）",
+						"aria-label": "工具",
+					},
 					h(ui.IconToolOutlineRegular, { size: 12 }),
-					h("span", { style: { fontSize: 11, opacity: 0.7 } }, "tools"),
 					body,
 				);
 			};
@@ -1188,7 +1254,7 @@ window.__ModuleLoader__.load({
 			const toolsSection = (() => {
 				if (!open || payload === void 0) return null;
 				const tools = payload.tools;
-				const local = tools?.local ?? [];
+				const local = (tools?.local ?? []).map(asTool);
 				const failed = tools?.error !== void 0;
 				return h(
 					"div",
@@ -1221,7 +1287,7 @@ window.__ModuleLoader__.load({
 							: h(
 									"div",
 									{ style: { display: "flex", flexDirection: "column" } },
-									local.map((name) => h(ToolRow, { key: name, name })),
+									local.map((tool) => h(ToolRow, { key: tool.name, tool })),
 								),
 				);
 			})();
@@ -1270,7 +1336,9 @@ window.__ModuleLoader__.load({
 						icon: h(ui.IconGlobeOutlineRegular, { size: 13 }),
 						name: "MCP",
 						count: connectedServers.length,
-						note: connected ? `${totalMcpTools} 个工具` : "未连接",
+						// The words the collapsed mark no longer prints: this heading is
+						// where "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
+						note: mcpStateLabel,
 					}),
 					// A dead change stream is stated before the numbers it affects, not
 					// after: the reader is about to trust them.
@@ -1323,16 +1391,10 @@ window.__ModuleLoader__.load({
 										server.tools.length > 0
 											? h(
 													"div",
-													{
-														style: {
-															paddingLeft: 19,
-															fontSize: 11,
-															opacity: 0.55,
-															lineHeight: 1.6,
-															wordBreak: "break-all",
-														},
-													},
-													server.tools.join("、"),
+													{ style: { paddingLeft: 19, display: "flex", flexDirection: "column" } },
+													// Same row as the non-MCP list: the whole point of asking
+													// "what does the model get" includes what each tool is for.
+													server.tools.map((tool) => h(ToolRow, { key: tool.name, tool })),
 												)
 											: null,
 									),

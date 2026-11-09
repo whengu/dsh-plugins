@@ -339,6 +339,26 @@ function findByLabel(node, label) {
   return findByLabel(node.children, label);
 }
 
+/**
+ * The words a collapsed mark carries in its tooltip instead of printing them.
+ *
+ * The row is icons-only, so "未连接 / 连接故障 / 读取失败" live in the chip's `title`
+ * (and the same sentence reaches the panel heading). These helpers read that, so a
+ * state assertion does not need the words to be visible in the row.
+ * @param tree - built tree root.
+ * @param label - the mark's exact `aria-label` (`MCP` / `技能` / `工具`).
+ * @returns the tooltip text, or an empty string when the mark is absent.
+ */
+function markTitle(tree, label) {
+	const node = findByLabel(tree, label);
+	return typeof node?.props?.title === "string" ? node.props.title : "";
+}
+
+/** @returns the MCP mark's tooltip, e.g. `MCP：未连接`. */
+const mcpStateOf = (tree) => markTitle(tree, "MCP");
+/** @returns the skill mark's tooltip, e.g. `技能清单读取失败`. */
+const skillStateOf = (tree) => markTitle(tree, "技能");
+
 function findButton(node, label) {
   if (node === null || node === undefined || typeof node !== "object") return undefined;
 
@@ -386,10 +406,23 @@ const payloadOk = {
   bundles: { bundles: [{ name: "dsh-base", enabled: true, version: "0.2.1-rc.2", rows: [1, 2] }] },
   // What the host half reports: `local` connected with two registered tools, plus
   // three non-MCP tools. 2 + 3 = 5 keeps `totalTools` honest against the buckets.
+  // Each tool carries its own description, which is what the panel prints.
   tools: {
-    servers: [{ server: "local", tools: ["read_file", "write_file"] }],
+    servers: [
+      {
+        server: "local",
+        tools: [
+          { name: "read_file", description: "Read a file over MCP" },
+          { name: "write_file", description: "Write a file over MCP" },
+        ],
+      },
+    ],
     totalTools: 5,
-    local: ["bash", "read", "read_img"],
+    local: [
+      { name: "bash", description: "Run a shell command" },
+      { name: "read", description: "Read a file" },
+      { name: "read_img", description: "Describe an image with the vision model" },
+    ],
     scope: "agent",
   },
   mcpRows: [mcpEntry],
@@ -403,7 +436,16 @@ const payloadNoResources = { ...payloadOk, inventory: { snapshot: { entries: [mc
 // absent from the registry. This is the case 有/无 must get right.
 const payloadDisconnected = {
   ...payloadOk,
-  tools: { servers: [], totalTools: 3, local: ["bash", "read", "read_img"], scope: "global" },
+  tools: {
+    servers: [],
+    totalTools: 3,
+    local: [
+      { name: "bash", description: "Run a shell command" },
+      { name: "read", description: "Read a file" },
+      { name: "read_img", description: "Describe an image with the vision model" },
+    ],
+    scope: "global",
+  },
 };
 const okProps = { sessionId: "s1", load: async () => payloadOk };
 const disconnectedProps = { sessionId: "s1", load: async () => payloadDisconnected };
@@ -412,8 +454,12 @@ const disconnectedProps = { sessionId: "s1", load: async () => payloadDisconnect
 let tree = mount(okProps);
 log("case1 (first paint)", tree);
 let text = textOf(tree);
-check(text.includes("skill"), "first paint must label skill");
-check(text.includes("MCP"), "first paint must label MCP");
+// The marks are icons only now: the dock is a shared row and every label cost the
+// width the numbers needed. Meaning survives through the glyph and an accessible
+// name, so that is what is pinned — plus the flat ban on word labels below.
+check(findByLabel(tree, "技能") !== undefined, "the skill mark must carry an accessible name");
+check(findByLabel(tree, "MCP") !== undefined, "the MCP mark must carry an accessible name");
+check(findByLabel(tree, "工具") !== undefined, "the tools mark must carry an accessible name");
 check(text.includes("…"), "first paint must show a pending placeholder");
 check(!text.includes("未连接"), "first paint must NOT claim MCP is disconnected before reading");
 // The strip carries no title word of its own; the two marks name themselves.
@@ -426,7 +472,11 @@ tree = render(okProps);
 log("case2 (loaded, collapsed)", tree);
 text = textOf(tree);
 check(text.includes("2"), "skill count 2 must render");
-check(text.includes("MCP"), "first paint must label MCP");
+// No word labels anywhere in the collapsed row, by explicit request: the three
+// numbers sit next to their own icons instead of "skill 2" / "MCP 28" / "tools 40".
+check(!/\bskill\b/.test(text.join(" ")), "the collapsed row must not print the word skill");
+check(!/\btools\b/.test(text.join(" ")), "the collapsed row must not print the word tools");
+check(!text.includes("MCP"), "the collapsed row must not print MCP");
 check(!text.includes("mcp-local"), "the collapsed row must not print server ids");
 check(!text.includes("…"), "no placeholder once data arrived");
 // MCP is a yes/no answer about the live registry, not a roster.
@@ -435,7 +485,6 @@ check(!text.includes("未连接"), "a connected server must not read 未连接")
 check(!has(text, "已启用 · "), "the collapsed row must not print Loader phases");
 // The third mark: total tools offered, which is the whole point of asking "what
 // does the model actually get". It must not be the MCP subset repeated.
-check(has(text, "tools"), "the row must label the tools mark");
 check(text.includes("5"), "the tools mark must show the total, not the MCP subset");
 // Collapsed must not build the detail trees: they are skipped for cost, since the
 // dock re-renders on every composer keystroke.
@@ -476,6 +525,10 @@ check(text.includes("技能") && text.includes("MCP"), "both group headings pres
 check(text.includes("工具"), "the tools group must have its own heading");
 check(has(text, "read_img"), "the detail must list non-MCP tool names");
 check(has(text, "bash"), "every non-MCP tool must be listed, not only the interesting ones");
+// The description is the tool author's own words from the schema, which is the
+// only place they exist — so the detail must print them, for both halves.
+check(has(text, "Describe an image with the vision model"), "a non-MCP tool must show its description");
+check(has(text, "Read a file over MCP"), "an MCP tool must show its description too");
 check(
   has(text, "本会话 agent 可见"),
   "an agent-scoped answer must say so, because that is the answer with restrictions applied",
@@ -491,6 +544,33 @@ check(
   "the resource plugin must not be listed as a server",
 );
 
+// --- Case 3a: an older host that sends bare tool names ---------------------
+// The browser half updates on a refresh; the host half only on a restart. During
+// that window the payload still carries `["read_file"]` rather than objects, and
+// the panel must degrade to "names, no descriptions" instead of empty rows.
+const legacyShapeProps = {
+  sessionId: "s-legacy",
+  load: async () => ({
+    ...payloadOk,
+    tools: {
+      ...payloadOk.tools,
+      servers: [{ server: "local", tools: ["read_file"] }],
+      local: ["bash"],
+    },
+  }),
+};
+{
+  mount(legacyShapeProps);
+  await settle();
+  const legacyTree = render(legacyShapeProps);
+  const openLegacy = findButton(legacyTree, "明细");
+  if (openLegacy) openLegacy.props.onClick();
+  await flush();
+  const legacyText = textOf(render(legacyShapeProps));
+  check(has(legacyText, "read_file"), "a bare tool name from an older host must still render");
+  check(has(legacyText, "bash"), "a bare non-MCP tool name must still render");
+  check(!has(legacyText, "undefined"), "an older host's shape must never print undefined");
+}
 // --- Case 3b: no resource plugin -----------------------------------------
 const noResProps = { sessionId: "s1b", load: async () => payloadNoResources };
 mount(noResProps);
@@ -498,7 +578,7 @@ await settle();
 text = textOf(render(noResProps));
 log("case3b (no resources)", render(noResProps));
 check(!has(text, "资源工具"), "no resource line when the plugin is absent");
-check(text.includes("MCP"), "the MCP mark survives without the resource plugin");
+check(mcpStateOf(tree).length > 0, "the MCP mark survives without the resource plugin");
 
 // --- Case 4: tool registry read failed -----------------------------------
 const badProps = { sessionId: "s2", load: async () => ({ ...payloadOk, tools: { error: "boom" } }) };
@@ -512,7 +592,7 @@ await settle();
 render(badProps);
 text = textOf(render(badProps));
 log("case4 (tools failed)", render(badProps));
-check(text.includes("读取失败"), "a failed tool-registry read must say 读取失败");
+check(mcpStateOf(render(badProps)).includes("读取失败"), "a failed tool-registry read must report 读取失败 (in the tooltip; the row is icons-only)");
 check(!text.includes("未连接"), "a failed registry read must not be reported as disconnected");
 check(findDialog(render(badProps)) === undefined, "a failed registry read must NOT be called a fault");
 check(!has(text, "资源工具"), "a failed registry read must not invent a resource line");
@@ -532,9 +612,9 @@ await settle();
 render(disconnectedProps);
 text = textOf(render(disconnectedProps));
 log("case4b (configured but disconnected)", render(disconnectedProps));
-check(text.includes("连接故障"), "a configured server with no registered tools must read 连接故障");
+check(mcpStateOf(render(disconnectedProps)).includes("连接故障"), "a configured server with no registered tools must claim 连接故障");
 check(!text.includes("未连接"), "a real fault must not be softened to 未连接");
-check(text.includes("连接故障"), "a configured-but-disconnected server must read 连接故障");
+check(mcpStateOf(render(disconnectedProps)).includes("连接故障"), "a configured-but-disconnected server must claim 连接故障");
 // The dialog must open by itself — this is the whole point of the feature.
 const dialogNode = findDialog(render(disconnectedProps));
 check(dialogNode !== undefined, "the fault dialog must open on its own when a configured server registers no tools");
@@ -571,7 +651,7 @@ render(emptyProps);
 await settle();
 render(emptyProps);
 text = textOf(render(emptyProps));
-check(text.includes("未连接"), "an empty successful read must say 未连接");
+check(mcpStateOf(render(emptyProps)).includes("未连接"), "an empty successful read must read 未连接");
 check(findDialog(render(emptyProps)) === undefined, "no MCP configured must NOT open the fault dialog");
 check(!text.includes("连接故障"), "no MCP configured must NOT read 连接故障");
 
@@ -594,7 +674,7 @@ await settle();
 render(disabledProps);
 text = textOf(render(disabledProps));
 check(findDialog(render(disabledProps)) === undefined, "a disabled MCP row must NOT open the fault dialog");
-check(text.includes("未连接"), "a disabled MCP row reads 未连接, not a fault");
+check(mcpStateOf(render(disabledProps)).includes("未连接"), "a disabled MCP row reads 未连接, not a fault");
 
 // --- Case 5a2: registry read failed, rows enabled ------------------------
 // The strip cannot tell whether this is a fault, so it must not accuse.
@@ -611,7 +691,7 @@ await settle();
 render(unreadableProps);
 text = textOf(render(unreadableProps));
 check(findDialog(render(unreadableProps)) === undefined, "an unreadable registry must NOT open the fault dialog");
-check(text.includes("读取失败"), "an unreadable registry still reports 读取失败");
+check(mcpStateOf(render(unreadableProps)).includes("读取失败"), "an unreadable registry still reports 读取失败");
 
 // --- Case 5b: skills read failed -----------------------------------------
 // Each block fails independently, so a skills failure must not blank MCP.
@@ -623,8 +703,8 @@ mount(skillsBadProps);
 await settle();
 text = textOf(render(skillsBadProps));
 log("case5b (skills failed)", render(skillsBadProps));
-check(has(text, "读取失败"), "a failed skills read must say 读取失败");
-check(text.includes("MCP"), "a skills failure must not blank the MCP mark");
+check(skillStateOf(render(skillsBadProps)).includes("读取失败"), "a failed skills read must report 读取失败 (tooltip; the row is icons-only)");
+check(mcpStateOf(render(skillsBadProps)).length > 0, "a skills failure must not blank the MCP mark");
 const expand5b = findButton(render(skillsBadProps), "明细");
 if (expand5b) expand5b.props.onClick();
 await flush();

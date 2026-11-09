@@ -10,6 +10,7 @@ import {
 	apply,
 	createToolSummaryReader,
 	inject,
+	MAX_DESCRIPTION_CHARS,
 	name,
 	openEventStream,
 	ROUTE_CHANNEL,
@@ -41,22 +42,39 @@ check(nested?.server === "my__server", "server names containing __ must survive 
 check(nested?.tool === "tool", "the tool part is whatever follows the last separator");
 
 // --- summarizeMcpTools ----------------------------------------------------
+// Each tool is an entry carrying its own description, not a bare name: the panel
+// shows "what is this for" next to the name, and the schema is the only place
+// those words exist.
 const summary = summarizeMcpTools([
-  { name: "mcp__local__read_file" },
+  { name: "mcp__local__read_file", description: "Read a file from the MCP server" },
   { name: "mcp__local__write_file" },
-  { name: "mcp__remote__search" },
+  { name: "mcp__remote__search", description: "  Search the web  " },
   { name: "read" },
   { name: "bash" },
 ]);
 check(summary.length === 2, "two servers must be reported");
 check(summary[0].server === "local" && summary[0].tools.length === 2, "local must carry its two tools");
-check(summary[1].server === "remote" && summary[1].tools[0] === "search", "remote must carry its one tool");
+check(summary[1].server === "remote" && summary[1].tools[0].name === "search", "remote must carry its one tool");
+check(
+  summary[0].tools[0].description === "Read a file from the MCP server",
+  "a tool must carry its own description",
+);
+check(summary[0].tools[1].description === "", "a missing description must be an empty string, not undefined");
+check(summary[1].tools[0].description === "Search the web", "the description must be trimmed");
 check(
   summary.every((entry) => entry.server !== "read" && entry.server !== "bash"),
   "built-in tools must never be counted as MCP servers",
 );
 check(summarizeMcpTools([]).length === 0, "an empty registry reports no servers");
 check(summarizeMcpTools(undefined).length === 0, "a missing registry reports no servers");
+{
+  // The cap is a wire bound: a pathological description must not turn one panel
+  // read into a megabyte, and the cut is marked so the reader knows it happened.
+  const long = "x".repeat(MAX_DESCRIPTION_CHARS + 50);
+  const capped = summarizeMcpTools([{ name: "mcp__s__t", description: long }])[0].tools[0];
+  check(capped.description.length === MAX_DESCRIPTION_CHARS + 1, "an over-long description must be capped");
+  check(capped.description.endsWith("…"), "a capped description must say it was cut");
+}
 
 // --- readToolSummary ------------------------------------------------------
 const okSummary = readToolSummary({ tools: { schemas: () => [{ name: "mcp__local__x" }, { name: "read" }] } });
@@ -80,21 +98,25 @@ check(failedSummary.error === "registry exploded", "the failure must carry the r
 // so a plugin's tool and a shipped tool are indistinguishable. The check pins the
 // only distinction that is actually observable — MCP server tool vs not.
 const catalog = [
-	{ name: "mcp__local__read_file" },
-	{ name: "read" },
-	{ name: "bash" },
-	{ name: "mcp__remote__search" },
-	{ name: "read_img" },
+	{ name: "mcp__local__read_file", description: "MCP read" },
+	{ name: "read", description: "Read a file" },
+	{ name: "bash", description: "Run a shell command" },
+	{ name: "mcp__remote__search", description: "MCP search" },
+	{ name: "read_img", description: "Describe an image" },
 ];
 const splitCatalog = summarizeTools(catalog);
 check(splitCatalog.servers.length === 2, "the MCP half must still be grouped per server");
 check(
-	JSON.stringify(splitCatalog.local) === JSON.stringify(["bash", "read", "read_img"]),
-	`every non-MCP tool must land in local, sorted, saw ${JSON.stringify(splitCatalog.local)}`,
+	JSON.stringify(splitCatalog.local.map((tool) => tool.name)) === JSON.stringify(["bash", "read", "read_img"]),
+	`every non-MCP tool must land in local, sorted, saw ${JSON.stringify(splitCatalog.local.map((tool) => tool.name))}`,
 );
 check(
-	splitCatalog.local.every((entry) => !entry.startsWith("mcp__")),
+	splitCatalog.local.every((entry) => !entry.name.startsWith("mcp__")),
 	"no MCP tool name may leak into the local bucket",
+);
+check(
+	splitCatalog.local.find((tool) => tool.name === "read_img")?.description === "Describe an image",
+	"a non-MCP tool must carry its own description too",
 );
 check(summarizeTools([]).local.length === 0, "an empty catalog has no local tools");
 check(summarizeTools(undefined).local.length === 0, "a missing catalog has no local tools");
