@@ -146,19 +146,29 @@ dsh plugin --profile web add ./dist/dsh-ability-strip-<新版本>.tgz
 - 连上但零工具 = 未连接：`dsh-mcp-client` 连接对象私有，两种情况从注册表不可区分；工具不可用即未连接，是有意读法。
 - 无连接细节：失败原因在 Host 日志，页面拿不到——弹窗明说这一点。
 
-## 7.5 技术债（官方点名，尚未偿还）
+## 7.5 技术债
 
-### 债 1：客户端 require 了 `@deepseek-ai/dsh-client-ui-primitives`（官方明文禁止）
+### 债 1：客户端 require 了 `@deepseek-ai/dsh-client-ui-primitives` —— **已于 0.5.0 偿还**
 
 DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.md` 写着：
 
 > **Do not `require('@deepseek-ai/dsh-client-ui-primitives')`** or load any other Harness Client package as a module… They change without notice, a plain-JS plugin has no type check, and **a throwing component blanks your slot entry** (console: `slot entry crashed in '<slot>'`). Write your own controls and match the host instead: copy markup, CSS, and behavior from the primitive into the plugin … keep only `--dsw-alias-*` token references …
 
-**现状**：`lib/client.js` 目前 require 它，用 `ui.Button` / `ui.Tag` / `ui.Modal` / `ui.IconWarningOutlineRegular`。真机验证能跑，但风险是官方点名的：0.2.2 已经把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包**合并进 shell**，只因模块表恰好仍暴露这些名字才没炸。
+**当时的状态**：`lib/client.js` 曾 require 它，用 `ui.Button` / `ui.Tag` / `ui.Modal` / 11 个 `ui.Icon*`。真机能跑，但风险是官方点名的：0.2.2 已经把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包**合并进 shell**，只因模块表恰好仍暴露这些名字才没炸。
 
-**偿还方向**（按官方指引）：自带控件 + 只用 `--dsw-alias-*` 主题 token；从 primitives 抄 markup/CSS/行为（含 Modal 的焦点与 Escape、`role`/`aria` 语义），类名加本插件前缀。注意 `package.json` 里的 `dsh.client.inject` 声明**仍允许**（只影响激活顺序），被禁的是运行时 `require(...)`。
+**0.5.0 怎么做的**：
 
-**为什么值得优先做**：它比推送机制更影响长期可维护性——一次 dsh 升级就可能让 slot 变空白，而这是用户直接可见的故障。
+- `lib/client.js` 顶部新增一段**本地 UI kit**（`Icon` / `Tag` / `Button` / `Modal` + 10 条图标 path），`require` 面收敛为 `["react","react-dom"]`。
+- 色彩**只**引用 `--dsw-alias-*`：`state-warn-primary`、`state-error-primary`、`state-success-primary`、`label-primary/secondary/tertiary`、`bg-layer-1`、`bg-base`、`bg-mask-1`、`border-l2`、`button-primary-fill`、`interactive-bg-hover`。这些名字不是猜的——在真机页面用 `getComputedStyle` 读过。**注意它们定义在 `<body>` 上并向 composer dock 继承，`document.documentElement` 上查是空的。**
+- `Modal` 自己实现：portal 到 `body`、`role="dialog"` + `aria-modal="true"`、Escape（capture 且消费事件，避免同时关掉后面的面板）、遮罩点击关闭、打开时移入焦点 / 关闭时归还、Tab 在对话框内循环。
+- 图标是 16×16 单 path 的 outline SVG，`stroke="currentColor"` + `vectorEffect: non-scaling-stroke`；加载态用 SMIL `animateTransform` 旋转，不依赖样式表。
+
+**守卫**（把规则变成会红的检查，而不是注释）：
+
+- `check-bundle-contract.mjs` 的基线允许表**只留 React**，并单列一条断言：`require` 里出现任何 `@deepseek-ai/*` 即失败，失败信息带官方出处。变异验证：把 primitives 加回去 → 立刻 `RESULT: FAIL`。
+- `check-render.mjs` 新增 `collectElements()`，断言故障对话框里的图标**渲染成真实 `<svg>`**，且调用点传的 `style.color` **透传到 svg**。后一条是真踩到的 bug：`Icon` 最初吞掉 `style`，红色故障图标会退回继承色（变异验证：去掉透传 → 该断言红）。
+
+**残留代价（如实说）**：这些控件的外观不再随宿主升级自动演进——宿主改了按钮圆角或 Tag 配色，本插件不会跟。这是官方指引接受的交换。
 
 ### 债 2：安装入口不是官方 `plugin_manager install_bundle`
 
@@ -182,6 +192,7 @@ DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.
 | 2026-11-09 | **0.4.0 复审修复（推送断开 + 拆流泄漏）** | 复审指出两处真缺陷，都已修。**(1) 变更流断开后能力条静默停更**：`EventSource` 遇到致命状态（非 200、content-type 不对）**永不重试**，而原实现只挂了 `message`，于是没有任何读取、数字冻结却看不出「停更」——把静默失败从 MCP 转移到了自己的传输层。修法：`error` 上补读一次（`compensated` 闸保证一次故障只补一次，`open`/`message` 复位）、状态可见（收起态 11 px 警示标，健康时不渲染所以宽度不变；面板里一句话）、切回标签页重开被彻底关闭的流（仍无定时器）。**(2) `send()` 的 `catch` 破坏清理路径**：原来 `catch` 只置 `closed`，而 `shutdown` 以 `closed` 早退，导致 `detach()` 与 `streams.delete` 都不执行——安全网失败反而制造泄漏。修法：把 `closed`/拆除两义合一为单个 `cleaned` 闸，`catch` 直接调 `shutdown()`；并给 reader 加只读 `subscribers`，用真实流逐条测三条结束路径（abort / cancel / unload）都清空订阅者与 unload 集合。**覆盖诚实度**：(1) 的每个分支都有能抓到回归的变异（去 `error` 监听、去一次性闸、不重置闸、去重开、无条件重开）；(2) 的 `catch` 分支**没有任何可触发路径**，变异后检查仍全绿——它是正确的安全网而非被证明的行为，未强行造测试入口 |
 | 2026-11-09 | **0.4.0 装机 + 发现宿主不热重载** | 打包（`verify-pack` PASS）→ `dsh plugin add ./dist/…-0.4.0.tgz` → 硬刷新。**客户端 0.4.0 生效**：渲染 `skill 22 / MCP 28`，并因推送未通而正确显示琥珀警示标（**这是修复 (1) 的真机验证**）。**宿主半边未生效**：`GET /api/ability-strip/events` 返回 404，而 `POST /api/ability-strip` 正常 200 且带真实数据。定位：Loader 用普通 `import()`，同一 specifier 命中 Node ESM 缓存；`dsh-hmr` 只监视 patch/清单并重组层，**不重新求值宿主模块**。结论：**宿主半边改动必须重启 Host**（我此前在 INSTALL.md/README 写的"Host 不需要重启"是错的，已全仓纠正，并给出"探测只有新代码才有的路由"这个判别法） |
 | 2026-11-09 | **查官方口径（结论：方向对，另有三处偏离）** | 用户质疑"DSH 大多数东西都热重载，是不是走错方向"。找到随包安装的官方 skill `dsh-agent-preset/skills/cordis-plugin-development/`，其 `references/host-plugin.md` 明文：**"Installing a new bundle can activate through HMR; replacing an installed package requires restart to load a fresh JavaScript module generation."** → 重启要求是官方规则，非我方判断失误。`references/practices.md` 亦明文 **"Do not poll"** / "Wait on durable events"，故"轮询→事件推送"方向与官方一致。同时发现三处偏离：**(1) 客户端 require `ui-primitives` 被官方明文禁止（技术债，见 §7.5）**；(2) 安装入口应为 `plugin_manager install_bundle`（我们用的是 `dsh plugin add`，拿不到 `restart-required`）；(3) 官方本地开发用目录安装（= 链接），本仓库为发布隔离而禁用。已全部写入仓库根 `INSTALL.md` §15 |
+| 2026-11-09 | **0.5.0 偿还 §7.5 债 1：剥离 primitives 依赖** | 用户要求"处理技术债和质量问题，范围全仓库"。做法：在 `lib/client.js` 内实现本地 UI kit（Icon/Tag/Button/Modal + 10 条图标 path），色彩只用真机读出来的 `--dsw-alias-*`；`require` 面从 `["react","react-dom","@deepseek-ai/dsh-client-ui-primitives"]` 收敛到 `["react","react-dom"]`。**宿主半边一字未改**（`lib/index.js` 归一化哈希仍为 `E3E8BDD6FBB46C92`），所以本次装机不需要重启 Host，硬刷新即可。附带修掉两个真 bug：①`Icon` 吞掉调用点传的 `style`（彩色故障图标会退回继承色）；②`check-render` 的 `createElement` 不像 React 那样写 `props.children`，换成按 React 契约解构 children 的组件后会静默丢文本。两处都补了断言并做变异验证。 |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

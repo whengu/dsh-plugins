@@ -101,7 +101,7 @@ wire:     text/event-stream, 每帧形如 `data: {"version":N}`
 - **连上但零工具读作 未连接。** 唯一的证据是注册到的工具。`dsh-mcp-client` 的连接对象是私有的，连接成功但不暴露工具的服务器和从没连上的服务器无法区分。两者都报 未连接，有意为之：工具不可用的服务器两种情况下都不能用。
 - **没有连接细节。** 服务器真失败时，原因不在注册表里——它去了 Host 日志。能力条说不出为什么。
 - **推送通道占一条浏览器连接。** 每个页面持有一条常开的 SSE 请求（HTTP/1.1 同一 origin 上限 6 条）。空闲时不发数据，但这条槽位是占着的。DSH 自己的客户端 HMR 也用同样的做法。
-- **客户端依赖了官方不建议的模块。** 本插件运行时 `require` 了 `@deepseek-ai/dsh-client-ui-primitives`（用它的 Button/Tag/Modal/图标）。DSH 官方 skill `cordis-plugin-development` 的 `references/practices.md` **明文禁止**这样做（理由：这类包会无预警变化，且一个抛错的组件会让整个 slot 变空白）。当前能正常工作，但这是已知技术债，方向是改成自带控件 + 只用 `--dsw-alias-*` 主题 token。细节与偿还方式见 [HANDOFF.md §7.5](HANDOFF.md)。
+- **自带控件，只用 theme token。** 0.5.0 起本插件的浏览器半边**不加载任何 Harness Client 包**（此前 `require` 了 `@deepseek-ai/dsh-client-ui-primitives`，那是 DSH 官方 skill `cordis-plugin-development` 里 `references/practices.md` 明文禁止的做法）。按钮、状态标签、弹窗、图标全部是本 bundle 自己的实现，色彩只引用 `--dsw-alias-*` 主题变量。代价是这些控件的外观不随宿主升级自动演进；收益是宿主把那些包改名、合并、删掉时本插件不会跟着变空白。
 
 Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`——**没有配置**——所以配置里的 `serverName` 从 inventory 拿不到。已连接的服务器改从工具注册表取名，面板才叫得出它们；Loader 行保留自己的行 id（本机是 `mcp-local`）。
 
@@ -211,7 +211,7 @@ pnpm 文档直说：从目录安装"会在 `node_modules` 里创建符号链接�
 - `dsh.manifestVersion: 1` 标记 manifest 格式（与 npm、Session 版本无关）。
 - `dsh.bundle.patch` 可以是一个路径或有序列表；本包用一个。
 - 不兼容的 **bundle** 在启动时跳过并列入 `skippedBundles`，不会崩掉应用；不兼容的 **tarball 安装**在安装后判定再回滚。这就是范围要声明在这里而不是留空的原因。
-- `dsh.client.external` 只用于非基线模块请求。本 bundle 只 import `react` 和 `@deepseek-ai/dsh-client-ui-primitives`，都在 shell 的静态表里，所以不需要 `external` 条目。
+- `dsh.client.external` 只用于非基线模块请求。本 bundle 只 import `react` 和 `react-dom`，两者都在 shell 的静态表里，所以不需要 `external` 条目。**不加载任何 Harness Client 包**是刻意的，理由见「已知限制」与仓库根 `INSTALL.md` §15.3。
 
 ## 构建
 
@@ -232,7 +232,7 @@ pnpm check                               # 前三项一起
 每项钉死什么：
 
 - **check-host** 导入 `lib/index.js`，钉死承重假设：`mcp__<server>__<tool>` 拆分，包括服务器名本身含 `__` 的情况（在**最后一个**分隔符处拆）以及拒绝非 MCP 名。随后检查汇总形状、注册表抛错变成 `error` 而不是静默零。路由部分是**两条**：读路由在 `/api/ability-strip`，只接受 POST、认载体 `client-request` 信封、对不可解析的 body 回 400；推送路由在 `/api/ability-strip/events`（路径按字面钉死，和浏览器硬编码的那串必须一致），只接受 GET、回 `text/event-stream`。变更流的契约逐条测：开流先写一条 SSE 注释、紧接着一帧当前版本；**开流本身不查注册表**（缓存是冷的，所以真读了会立刻多一次 `schemas()`）；`tools/change` 恰好推出下一版；请求中止与 effect dispose 都必须把流关掉。缓存部分：`tools/change` 恰好失效一次、重复读取不碰注册表、同一条 `tools/change` 订阅既管失效又管推送（订阅者收到变更、退订后收不到、订阅不读注册表）。
-- **check-bundle-contract** 用一个桩 `window.__ModuleLoader__` 求值 `lib/client.js`，断言 factory id 等于包名、只 require 基线模块（`react`、`react-dom`、`@deepseek-ai/dsh-client-ui-primitives`）、导出的 `inject` 列表覆盖实际读取的每个 Remote 和 service（含 `connection`），且 `apply()` 恰好往 `conversation.composer.dock` 注册一个组件、inject face 暴露 `load` 且*不*遮蔽内置 `sessionId` prop。
+- **check-bundle-contract** 用一个桩 `window.__ModuleLoader__` 求值 `lib/client.js`，断言 factory id 等于包名、只 require 基线模块（`react`、`react-dom`）、导出的 `inject` 列表覆盖实际读取的每个 Remote 和 service（含 `connection`），且 `apply()` 恰好往 `conversation.composer.dock` 注册一个组件、inject face 暴露 `load` 且*不*遮蔽内置 `sessionId` prop。基线允许表只留 React，并单列一条断言：**只要 `require` 里出现任何 `@deepseek-ai/*` 就失败**——把官方那条"不加载 Harness Client 包"从注释变成会红的检查（变异验证：把 primitives 加回去，该检查立刻红并打印官方出处）。
 - **check-render** 用一个小 hook 运行时构建树，桩掉 `document.body`、`createPortal`、`EventSource` 记录器，断言每种显示状态下读者可见的文本：首绘（pending，从不下假结论）、已加载（`skill N`、MCP 工具数、不打印服务器 id）、**配置了服务器但零工具注册时读作 未连接**且仍列为已配置、展开态（portal 面板带两节标题、skill `/name`、`whenToUse`、已连接服务器及工具数和工具名称、Loader phase、资源插件行、bundles、刷新与关闭控件）、无资源插件、工具注册表失败（`读取失败`，绝不静默报已连接/未连接）、skills/bundles 独立失败、空但成功的读取（`未连接`）、以及 load 抛错（错误必须可见）。它还证明收起态不构建任何明细树（dock 在 composer 每次击键都会重渲染）。
 - **推送机制本身在 check-render 里被钉死**：`setInterval` 被捕获而从不调度——**任何状态下只要注册了定时器就算失败**（这是"旧问题消失"的直接证据）；每次挂载恰好开一条流、地址是文档相对路径 `api/ability-strip/events`、卸载时关掉并摘掉 visibility 监听器。三道护栏对应三类浪费，各自有独立断言：隐藏标签页收到帧也不读（切回来补读）、同一答案的帧返回同一个 state 对象（不渲染）、读取未完成时的一波帧折叠成一次补偿读取。推送断开这一路单独测：报错后**恰好**补读一次且标记可见、再报错**不**再补读、`open` 后标记清除且下一次报错又会补读一次、关掉的流在切回标签页时重开一条（活着的时候不许重开）。
 - **故障触发有自己的变异矩阵。** 三个条件每一个都被证明是必要的——破坏它、看对应检查失败：去掉 `tools.error` 会让读不动的注册表弹窗，去掉"有启用行"要求会让没配置的 profile 弹窗，把"没有服务器"强制为 false 会让真故障漏报。每条否定检查都跑完整的提交序列，否则错误弹开的对话框根本到不了可见阶段。

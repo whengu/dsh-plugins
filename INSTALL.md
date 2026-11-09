@@ -697,17 +697,22 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 
 **我们为什么仍用 `dsh plugin --profile web add <tarball>`**：本仓库要求发布与源码物理隔离（§0），而官方目录安装是链接。用 tarball 能同时满足隔离与可回滚。代价：拿不到官方的 `restart-required` 信号，只能靠 15.1 的判别法自查。**如果你只是做本地快速迭代**，用官方 `install_bundle`（链接）更顺手——但要接受"改源码即改线上"。
 
-### 15.3 客户端不得 require Harness Client 包（我们违反了这条）
+### 15.3 客户端不得 require Harness Client 包（**已于 0.5.0 对齐**）
 
 `references/practices.md`：
 
 > **Do not `require('@deepseek-ai/dsh-client-ui-primitives')`** or load any other Harness Client package as a module; `dsh.client.inject` entries only order activation and stay allowed. They change without notice, a plain-JS plugin has no type check, and **a throwing component blanks your slot entry** (console: `slot entry crashed in '<slot>'`). Write your own controls and match the host instead: copy markup, CSS, and behavior from the primitive into the plugin … Rename copied classes under your plugin's prefix, keep only `--dsw-alias-*` token references …
 
-**现状（如实）**：`dsh-ability-strip/lib/client.js` **require 了** `@deepseek-ai/dsh-client-ui-primitives`（用 `ui.Button`/`ui.Tag`/`ui.Modal`/`ui.Icon`），**与官方这条明确冲突**。它能运行（真机验证过），但风险是官方点名的：0.2.2 就把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包合并进了 shell，模块表恰好还暴露这些名字才没炸。
+**曾经的状态**：`dsh-ability-strip/lib/client.js` 曾 `require` 它（用 `ui.Button`/`ui.Tag`/`ui.Modal`/`ui.Icon*`），与官方这条明确冲突。它能运行，但风险是官方点名的：0.2.2 就把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包合并进了 shell，模块表恰好还暴露这些名字才没炸。
 
-**这是本仓库当前最需要偿还的技术债**，处理方向：改成插件自带控件 + 只用 `--dsw-alias-*` theme token。记录在 `dsh-ability-strip/HANDOFF.md`。
+**0.5.0 已偿还**：该 bundle 现在自带 UI kit（`Icon`/`Tag`/`Button`/`Modal` + 10 条图标 path），`require` 面收敛为 `["react","react-dom"]`，色彩只引用 `--dsw-alias-*`。做法与残留代价见 `dsh-ability-strip/HANDOFF.md` §7.5。
+
+**已固化为检查**（这条规则不再靠人记）：`dsh-ability-strip/scripts/check-bundle-contract.mjs` 的基线允许表只留 React，并单列断言——`require` 里出现任何 `@deepseek-ai/*` 即失败，失败信息带官方出处。**新插件照此实现自己的检查。**
+
+**写 theme token 时的坑**：`--dsw-alias-*` 定义在 `<body>` 上并向 composer dock 继承，在 `document.documentElement` 上查是**空的**。要在真实渲染元素上读 `getComputedStyle` 才看得到（真机验证过：`document.body` 有值，`:root` 没有）。
 
 > 注意区分：`dsh.client.inject`（在 `package.json` 里声明模块）**仍是允许的**，它只影响激活顺序；被禁的是运行时 `require(...)` 那个包。
+
 
 ### 15.4 不要轮询，等事件（支持把定时器换成事件推送）
 
@@ -727,7 +732,7 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 | --- | --- | --- | --- | --- |
 | 安装形态 | 目录安装（= 链接源码） | tarball 拷贝 / git 源 | 发布与源码物理隔离、可回滚 | 放弃"改完即生效"的官方开发循环 |
 | 安装入口 | `plugin_manager install_bundle` | `dsh plugin --profile web add` | 同上（官方入口是链接） | 拿不到官方 `restart-required` 信号 |
-| 客户端依赖 | 禁止 `require` Harness Client 包 | **仍 require `ui-primitives`** | 历史实现，未重构 | 升级断裂风险（官方点名） |
+| 客户端依赖 | 禁止 `require` Harness Client 包 | **已对齐**：自带控件 + 仅 `--dsw-alias-*` token（0.5.0） | 官方明文禁止 | 控件外观不随宿主升级演进 |
 | 刷新机制 | 等框架转发的事件 | 自建 SSE 通道 | `tools/change` 不在转发白名单 | 多用一条 HTTP 连接；属官方空白区 |
 
 ### 15.6 官方推荐的排查顺序（照它做，省时间）

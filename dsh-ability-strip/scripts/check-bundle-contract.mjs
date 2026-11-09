@@ -26,15 +26,20 @@ globalThis.window = {
   },
 };
 
+/**
+ * Modules the bundle may load.
+ *
+ * Deliberately only React: the shipped `cordis-plugin-development` guidance
+ * (`references/practices.md`) forbids a plugin module from loading any Harness
+ * Client package — they change without notice, a plain-JS plugin gets no type
+ * check, and a component that throws blanks the slot entry. This bundle therefore
+ * carries its own controls and references only `--dsw-alias-*` theme tokens. A
+ * narrower allowlist turns that rule into a failing check instead of a comment.
+ */
 const BASELINE = new Set([
   "react",
   "react-dom",
   "react/jsx-runtime",
-  "@deepseek-ai/cordis",
-  "@deepseek-ai/dsh-client-store",
-  "@deepseek-ai/dsh-client-ui-dockkit",
-  "@deepseek-ai/dsh-client-ui-primitives",
-  "@deepseek-ai/dsh-client-ui-slots",
 ]);
 
 const required = [];
@@ -73,22 +78,6 @@ const React = {
 
 const moduleStub = (id) => {
   if (id === "react") return React;
-  if (id === "@deepseek-ai/dsh-client-ui-primitives") {
-    // Every primitive the bundle touches must exist; a Proxy lets us record
-    // names rather than guess them.
-    return new Proxy(
-      {},
-      {
-        get(_t, key) {
-          if (typeof key !== "string") return undefined;
-          return function Primitive(props) {
-            return { type: key, props, children: [] };
-          };
-        },
-        has: () => true,
-      },
-    );
-  }
   return {};
 };
 
@@ -118,6 +107,20 @@ const exportsObj = registration.factory((specifier) => {
 });
 
 console.log("required modules:", JSON.stringify(required));
+
+// The official rule, stated as its own check so the message names the reason
+// rather than only the allowlist. A Harness Client package loaded here would make
+// this bundle depend on internals that may be renamed, merged, or removed in any
+// release, and a component that throws at that point blanks the whole slot.
+const harnessModules = required.filter((specifier) => specifier.startsWith("@deepseek-ai/"));
+if (harnessModules.length > 0) {
+  problems.push(
+    `loads Harness Client package(s) ${JSON.stringify(harnessModules)}; the shipped `
+      + `cordis-plugin-development guidance (references/practices.md) forbids this — carry the `
+      + `controls locally and keep only --dsw-alias-* theme tokens`,
+  );
+}
+if (!required.includes("react")) problems.push("the bundle must load react");
 console.log("exported keys:", JSON.stringify(Object.keys(exportsObj).sort()));
 
 if (typeof exportsObj.apply !== "function") problems.push("missing apply()");

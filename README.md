@@ -17,11 +17,13 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 
 ## 插件索引
 
-| 插件 | 形态 | 版本 | 状态 | 文档 |
+| 插件 | 形态 | 版本（源码） | 已装版本 | 文档 |
 | --- | --- | --- | --- | --- |
-| [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.3.0 | `web` profile 已装，页面实测通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
-| [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.0 | `web` profile 已装，生产验证通过 | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
-| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.5 | `web` profile 已装，工具验收通过 | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+| [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.5.0 | `web` profile **0.5.0**，真机页面验收通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
+| [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.1 | `web` profile **0.1.0**（0.1.1 只加了测试，`lib/` 未改；发版后需重启 Host） | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
+| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.6 | **本机未安装**（该插件文档所述 0.1.5 安装在本机已不存在，见下方沿革） | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+
+> 「已装版本」是**实测值**（读 `$DSH_HOME/profiles/<profile>/node_modules/<包名>/package.json`），不是推断。核对命令见 [INSTALL.md §11.5](INSTALL.md#115-升级)。
 
 ## 快速开始（给第一次接触本仓库的人）
 
@@ -46,6 +48,14 @@ dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完
 
 > 仓库 clone 到哪都行，各机器不必一致。两种方式的完整对比、升级、回滚与禁忌见 [INSTALL.md §11](INSTALL.md#11-跨机器使用多台机器)。
 
+装之前先验证一遍全仓库（一条命令，跑每个插件自己的 `check`，并在 `check` 未包含测试时补跑 `test`）：
+
+```powershell
+node scripts/check-all.mjs
+```
+
+> 末尾只有 `RESULT: PASS` 才算过。它只跑离线检查，不需要 profile、不需要浏览器、不碰 `$DSH_HOME`。`test:live` 这类 opt-in 脚本不会被它执行。
+
 **开发时改源码，绝不影响已经安装的线上版本**——tarball 安装是解包拷贝，源码与运行副本物理隔离。要让线上更新，必须显式走一遍「递增版本号 → `pnpm pack` → `dsh plugin --profile web add`」。完整铁律与原因见 [INSTALL.md](INSTALL.md) 第 0–2 节。
 
 ## 仓库结构
@@ -53,25 +63,28 @@ dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完
 ```
 dsh-plugins/
 ├── README.md                  ← 本文件：项目入口 + 文档地图 + 插件索引
-├── INSTALL.md                 ← 跨插件规约：安装隔离 / 发版 / 排错 / 目录骨架
+├── INSTALL.md                 ← 跨插件规约：安装隔离 / 发版 / 排错 / 目录骨架 / 官方口径
+├── .gitattributes             ← eol=lf：换行不在各机器之间漂移
 ├── .gitignore                 ← node_modules/ dist/ profile-backups/ *.tgz *.broken
+├── scripts/check-all.mjs      ← 一条命令跑完所有插件的 check（含各自 test）
 ├── dsh-ability-strip/
 │   ├── README.md  HANDOFF.md
 │   ├── package.json  cordis.patch.yml
-│   ├── lib/index.js  lib/client.js
-│   ├── scripts/*.mjs          ← 四项契约/渲染/打包检查
-│   └── dist/                  ← 发布产物（git 忽略，磁盘保留，不可覆盖不可删）
+│   ├── lib/index.js  lib/client.js   ← client 自带 UI kit，不 require Harness Client 包
+│   ├── scripts/*.mjs                 ← 宿主/契约/渲染/打包四项检查
+│   └── dist/                         ← 发布产物（git 忽略，磁盘保留，不可覆盖不可删）
 ├── dsh-subagent-wait-reminder/
 │   ├── README.md  HANDOFF.md  REVIEW-v1-FAIL.md  REVIEW-v2-PASS.md  REVIEW-v3-PASS.md
 │   ├── package.json  cordis.patch.yml
 │   ├── lib/index.js
+│   ├── test/reminder.test.mjs        ← 25 例行为测试（node:test，零第三方依赖）
 │   └── dist/
 └── dsh-read-img/
     ├── README.md  HANDOFF.md
     ├── package.json  cordis.patch.yml
     ├── lib/index.js  lib/cache.js  lib/image.js  lib/vision.js
-    ├── scripts/check.mjs      ← 语法 + 包契约 + patch 契约
-    ├── test/                  ← 30 个离线用例 + 1 个 opt-in live 用例
+    ├── scripts/check.mjs             ← 语法 + 包契约 + patch 契约
+    ├── test/                         ← 42 例离线 + 11 例插件 + 1 个 opt-in live
     └── dist/
 ```
 
@@ -84,3 +97,5 @@ dsh-plugins/
 - 2026-11-03 迁移后两插件的 tgz 绝对路径变化，profile 已从新路径重新登记（相同字节重装，安装副本哈希与源码逐字节一致）。
 - 2026-11-04 规约从仓库外移入本仓库根 `INSTALL.md`（此前放工作区根，导致仓库不自洽、链接一出仓库即死链）。
 - **2026-11-09 新增 dsh-read-img**：起因是第三方 `dsh-tool-vision` 在上下文里注册 15 个工具（约 13.5 KB schema），对「读一个本地图片文件」过度设计；按需求澄清后改为单工具插件（0 hook、0 浏览器半边）。首个可安装版本 0.1.0，当日迭代到 0.1.4 并装入 web profile（0.1.4 起在请求层隐藏官方的 `read_image`）。
+- **2026-11-09 修正索引里的"已装"表述**：核对 `$DSH_HOME/profiles/*/node_modules` 发现，`dsh-read-img` 在本机**四个 profile（acp/headless/sdk/web）里都不存在**，而此前索引写的是「web profile 已装，工具验收通过」、该插件自己的文档也写「线上装的是 0.1.5」。原因未查明（可能是装过之后 profile 在 dsh 升级中被重建，仓库里确有 `profile-backups/`），**但事实是现在没装**。索引因此新增「已装版本」列并改为实测值。以后记录安装状态前请先跑一遍核对命令，不要沿用上一次的结论。
+- **2026-11-09 质量轮**：`dsh-ability-strip` 0.5.0 剥离 Harness Client 包依赖（自带 UI kit，`require` 面只剩 react/react-dom），并把官方那条规则固化成会红的检查；`dsh-subagent-wait-reminder` 0.1.1 补 25 例行为测试（`lib/` 未改，哈希可证）；`dsh-read-img` 0.1.6 修 `engines.dsh` 上界、`file://` 主机名语义、Windows 上写死的 POSIX 期望、`test:plugin` 在干净 checkout 上跑不起来四个问题。仓库新增 `.gitattributes`（`eol=lf`，避免换行造成哈希假失败）与 `scripts/check-all.mjs`（一条命令验证全仓库）。

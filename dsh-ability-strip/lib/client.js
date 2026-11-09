@@ -35,7 +35,331 @@ window.__ModuleLoader__.load({
 		const React = require("react");
 		const ReactDOM = require("react-dom");
 		const h = React.createElement;
-		const ui = require("@deepseek-ai/dsh-client-ui-primitives");
+
+		/**
+		 * Local UI kit — no Harness Client package is loaded.
+		 *
+		 * DSH's own guidance for plugin authors (`references/practices.md` in the
+		 * shipped `cordis-plugin-development` skill) is explicit: a plugin must not
+		 * `require("@deepseek-ai/dsh-client-ui-primitives")`. Those packages change
+		 * without notice, a plain-JS plugin gets no type check, and a component that
+		 * throws blanks the whole slot entry. The guidance says to write the
+		 * controls here instead — copy the markup, CSS, and behaviour, and keep only
+		 * `--dsw-alias-*` theme tokens — which is what this section is.
+		 *
+		 * The tokens are the only styling contract. Every name below was read from a
+		 * live page: they resolve on `<body>` and inherit down into the composer
+		 * dock, so a theme switch repaints these controls with everything else.
+		 * Nothing here depends on a host class name, so a host restyle cannot move
+		 * this strip's layout.
+		 */
+		const TOKEN = {
+			warn: "var(--dsw-alias-state-warn-primary)",
+			error: "var(--dsw-alias-state-error-primary)",
+			success: "var(--dsw-alias-state-success-primary)",
+			idle: "var(--dsw-alias-state-idle-primary)",
+			label: "var(--dsw-alias-label-primary)",
+			labelSecondary: "var(--dsw-alias-label-secondary)",
+			labelTertiary: "var(--dsw-alias-label-tertiary)",
+			surface: "var(--dsw-alias-bg-layer-1)",
+			surfaceBase: "var(--dsw-alias-bg-base)",
+			mask: "var(--dsw-alias-bg-mask-1)",
+			border: "var(--dsw-alias-border-l2)",
+			primaryFill: "var(--dsw-alias-button-primary-fill)",
+			hover: "var(--dsw-alias-interactive-bg-hover)",
+		};
+
+		/**
+		 * One 16x16 outline icon: a single stroked path, so it needs no stylesheet
+		 * and no font. `currentColor` keeps it on the text colour it sits in, and
+		 * `vectorEffect: non-scaling-stroke` keeps the stroke even at the 11-13 px
+		 * sizes the strip uses. Purely decorative, hence `aria-hidden`.
+		 * @param props.size - rendered edge length in px.
+		 * @param props.d - path data in the 16x16 viewBox.
+		 * @param props.spin - draws a rotating arc instead (a loading mark).
+		 * @param props.style - colour overrides, merged over the defaults.
+		 */
+		function Icon({ size = 16, d, spin = false, style, ...rest }) {
+			return h(
+				"svg",
+				{
+					...rest,
+					width: size,
+					height: size,
+					viewBox: "0 0 16 16",
+					fill: "none",
+					stroke: "currentColor",
+					strokeWidth: 1.4,
+					strokeLinecap: "round",
+					strokeLinejoin: "round",
+					"aria-hidden": true,
+					focusable: false,
+					style: { flex: "0 0 auto", display: "block", overflow: "visible", ...style },
+				},
+				h("path", {
+					d,
+					vectorEffect: "non-scaling-stroke",
+				}, spin
+					? h("animateTransform", {
+							attributeName: "transform",
+							type: "rotate",
+							from: "0 8 8",
+							to: "360 8 8",
+							dur: "0.9s",
+							repeatCount: "indefinite",
+						})
+					: null),
+			);
+		}
+
+		/* 16x16 outline geometry, one path each. */
+		const PATH = {
+			check: "M8 1.9a6.1 6.1 0 1 0 0 12.2A6.1 6.1 0 0 0 8 1.9M5.2 8.2l2 2 3.6-3.9",
+			clock: "M8 1.9a6.1 6.1 0 1 0 0 12.2A6.1 6.1 0 0 0 8 1.9M8 4.6V8l2.5 1.5",
+			close: "M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6",
+			plugin: "M4.2 5.9h7.6v5.3H4.2zM6.1 5.9V3.4M9.9 5.9V3.4M8 11.2v1.9",
+			globe: "M8 1.9a6.1 6.1 0 1 0 0 12.2A6.1 6.1 0 0 0 8 1.9M1.9 8h12.2M8 1.9c1.9 1.9 1.9 10.3 0 12.2M8 1.9c-1.9 1.9-1.9 10.3 0 12.2",
+			loading: "M8 1.9a6.1 6.1 0 0 1 6.1 6.1",
+			pause: "M6.1 4.2v7.6M9.9 4.2v7.6",
+			refresh: "M13.2 8A5.2 5.2 0 1 1 11.5 4M13.2 2.9v3.3h-3.3",
+			skill: "M8 2.1l1.6 4.3 4.3 1.6-4.3 1.6L8 13.9 6.4 9.6 2.1 8l4.3-1.6z",
+			warn: "M8 2.3l5.5 9.7H2.5zM8 6.1v2.9M8 10.6v.7",
+		};
+
+		/* Named components keep the call sites readable. */
+		const IconCheckCircleOutlineRegular = (p) => h(Icon, { ...p, d: PATH.check });
+		const IconClockOutlineRegular = (p) => h(Icon, { ...p, d: PATH.clock });
+		const IconCloseOutlineRegular = (p) => h(Icon, { ...p, d: PATH.close });
+		const IconCordisPluginOutlineRegular = (p) => h(Icon, { ...p, d: PATH.plugin });
+		const IconGlobeOutlineRegular = (p) => h(Icon, { ...p, d: PATH.globe });
+		const IconLoadingOutlineRegular = (p) => h(Icon, { ...p, d: PATH.loading, spin: true });
+		const IconPauseOutlineRegular = (p) => h(Icon, { ...p, d: PATH.pause });
+		const IconRefreshOutlineRegular = (p) => h(Icon, { ...p, d: PATH.refresh });
+		const IconSkillOutlineRegular = (p) => h(Icon, { ...p, d: PATH.skill });
+		const IconWarningOutlineRegular = (p) => h(Icon, { ...p, d: PATH.warn });
+
+		/** Tone palette for {@link Tag}: the host's state colours, nothing else. */
+		const TAG_TONE = {
+			neutral: { color: TOKEN.labelSecondary, border: TOKEN.border },
+			quiet: { color: TOKEN.labelTertiary, border: TOKEN.border },
+			success: { color: TOKEN.success, border: TOKEN.success },
+			danger: { color: TOKEN.error, border: TOKEN.error },
+		};
+
+		/**
+		 * A small state pill.
+		 * @param props.tone - `neutral` | `quiet` | `success` | `danger`.
+		 * @param props.children - the label.
+		 */
+		function Tag({ tone = "neutral", children }) {
+			const palette = TAG_TONE[tone] ?? TAG_TONE.neutral;
+			return h("span", {
+				style: {
+					fontSize: 10.5,
+					lineHeight: 1.5,
+					padding: "0 6px",
+					borderRadius: 999,
+					border: `1px solid ${palette.border}`,
+					color: palette.color,
+					whiteSpace: "nowrap",
+					fontVariantNumeric: "tabular-nums",
+					flex: "0 0 auto",
+				},
+			}, children);
+		}
+
+		/** Variant palette for {@link Button}. */
+		const BUTTON_VARIANT = {
+			primary: { background: TOKEN.primaryFill, color: TOKEN.surfaceBase, border: "1px solid transparent" },
+			ghost: { background: "transparent", color: TOKEN.labelSecondary, border: "1px solid transparent" },
+		};
+
+		/**
+		 * A real `<button>`, so keyboard activation, focus rings, and `disabled`
+		 * come from the browser rather than from re-implemented semantics. Every
+		 * prop other than `variant`/`size`/`style` lands on the DOM node, which is
+		 * how `aria-label`, `title`, `onClick`, and `disabled` reach it.
+		 * @param props.variant - `primary` | `ghost`.
+		 * @param props.size - `sm` | `md`.
+		 */
+		function Button({ variant = "ghost", size = "md", style, children, ...rest }) {
+			const palette = BUTTON_VARIANT[variant] ?? BUTTON_VARIANT.ghost;
+			return h("button", {
+				type: "button",
+				...rest,
+				style: {
+					...palette,
+					display: "inline-flex",
+					alignItems: "center",
+					justifyContent: "center",
+					gap: 4,
+					font: "inherit",
+					fontSize: size === "sm" ? 11.5 : 12.5,
+					padding: size === "sm" ? "2px 6px" : "5px 11px",
+					borderRadius: 6,
+					cursor: rest.disabled === true ? "default" : "pointer",
+					opacity: rest.disabled === true ? 0.5 : 1,
+					...style,
+				},
+			}, children);
+		}
+
+		/**
+		 * A modal dialog: portalled to `<body>`, `aria-modal`, Escape to close,
+		 * backdrop click to close, focus moved in and restored on close, and Tab
+		 * kept inside. Written here rather than imported for the reason in the kit
+		 * header; the behaviour is deliberately the same as the host's modal so the
+		 * plugin feels like part of the application.
+		 *
+		 * The `[role="dialog"][aria-modal]` marker matters beyond accessibility: the
+		 * detail panel's own Escape and outside-click handlers look for it to avoid
+		 * reacting to keys and clicks that belong to this dialog.
+		 * @param props.open - renders nothing unless exactly `true`.
+		 * @param props.onClose - invoked by Escape, the close button, or the backdrop.
+		 * @param props.title - dialog heading and accessible name.
+		 * @param props.closeLabel - accessible label for the close button.
+		 * @param props.footer - optional action row.
+		 */
+		function Modal({ open, onClose, title, closeLabel = "关闭", footer, children }) {
+			const dialogRef = React.useRef(null);
+			const returnTo = React.useRef(null);
+
+			React.useEffect(() => {
+				if (open !== true) return void 0;
+				returnTo.current = document.activeElement;
+				const dialog = dialogRef.current;
+				dialog?.focus();
+				return () => {
+					const previous = returnTo.current;
+					if (previous !== null && typeof previous?.focus === "function") previous.focus();
+				};
+			}, [open]);
+
+			React.useEffect(() => {
+				if (open !== true) return void 0;
+				/**
+				 * Capture phase, and the event is consumed: a dialog owns the keyboard
+				 * while it is open, so neither the panel behind it nor the page reacts.
+				 */
+				const onKey = (event) => {
+					if (event.key === "Escape") {
+						event.preventDefault();
+						event.stopPropagation();
+						onClose?.();
+						return;
+					}
+					if (event.key !== "Tab") return;
+					const dialog = dialogRef.current;
+					if (dialog === null) return;
+					const focusable = dialog.querySelectorAll(
+						'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+					);
+					if (focusable.length === 0) return;
+					const first = focusable[0];
+					const last = focusable[focusable.length - 1];
+					const active = document.activeElement;
+					if (event.shiftKey && (active === first || active === dialog)) {
+						event.preventDefault();
+						last.focus();
+					} else if (!event.shiftKey && active === last) {
+						event.preventDefault();
+						first.focus();
+					}
+				};
+				document.addEventListener("keydown", onKey, true);
+				return () => document.removeEventListener("keydown", onKey, true);
+			}, [open, onClose]);
+
+			if (open !== true) return null;
+
+			return ReactDOM.createPortal(
+				h(
+					"div",
+					{
+						style: {
+							position: "fixed",
+							inset: 0,
+							background: TOKEN.mask,
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							padding: 16,
+							zIndex: 2147483000,
+						},
+						onMouseDown: (event) => {
+							if (event.target === event.currentTarget) onClose?.();
+						},
+					},
+					h(
+						"div",
+						{
+							ref: dialogRef,
+							role: "dialog",
+							"aria-modal": "true",
+							"aria-label": title,
+							tabIndex: -1,
+							style: {
+								background: TOKEN.surface,
+								color: TOKEN.label,
+								border: `1px solid ${TOKEN.border}`,
+								borderRadius: 10,
+								boxShadow: "0 12px 32px rgba(0, 0, 0, 0.18)",
+								padding: 14,
+								width: "100%",
+								maxWidth: 460,
+								display: "flex",
+								flexDirection: "column",
+								gap: 10,
+								outline: "none",
+							},
+						},
+						h(
+							"div",
+							{ style: { display: "flex", alignItems: "center", gap: 8 } },
+							h("span", { style: { fontSize: 13, fontWeight: 600 } }, title),
+							h(
+								Button,
+								{
+									variant: "ghost",
+									size: "sm",
+									style: { marginLeft: "auto" },
+									onClick: onClose,
+									"aria-label": closeLabel,
+									title: closeLabel,
+								},
+								h(IconCloseOutlineRegular, { size: 12 }),
+							),
+						),
+						h("div", { style: { fontSize: 12.5, lineHeight: 1.6 } }, children),
+						footer === void 0
+							? null
+							: h(
+									"div",
+									{ style: { display: "flex", justifyContent: "flex-end", gap: 8 } },
+									footer,
+								),
+					),
+				),
+				document.body,
+			);
+		}
+
+		/* The kit's public surface, assembled where the host import used to be. */
+		const ui = {
+			Button,
+			Tag,
+			Modal,
+			IconCheckCircleOutlineRegular,
+			IconClockOutlineRegular,
+			IconCloseOutlineRegular,
+			IconCordisPluginOutlineRegular,
+			IconGlobeOutlineRegular,
+			IconLoadingOutlineRegular,
+			IconPauseOutlineRegular,
+			IconRefreshOutlineRegular,
+			IconSkillOutlineRegular,
+			IconWarningOutlineRegular,
+		};
 
 		/**
 		 * Cordis services this plugin waits for. Cordis gates every service read
@@ -1080,9 +1404,9 @@ window.__ModuleLoader__.load({
 					: null,
 				// The fault dialog. It is the one interruption this strip is allowed to
 				// make, and only for a real fault: MCP was configured and enabled, and
-				// nothing registered a tool. `ui.Modal` is the shipped component, so
-				// focus trapping, the mask, Escape, and the portal are its behaviour, not
-				// something re-implemented here.
+				// nothing registered a tool. The dialog is this bundle's own `Modal`, so
+				// focus moving in and back out, the mask, Escape, and the portal are
+				// implemented above rather than borrowed from a Harness Client package.
 				mcpFault
 					? h(
 							ui.Modal,

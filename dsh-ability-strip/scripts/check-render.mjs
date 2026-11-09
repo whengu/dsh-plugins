@@ -80,11 +80,23 @@ globalThis.window = {
   removeEventListener() {},
 };
 
-const createElement = (type, props, ...children) => ({
-  type,
-  props: props ?? {},
-  children: children.flat(Infinity),
-});
+/**
+ * Build one element node.
+ *
+ * Children land in `props.children` the way React puts them there: a single child
+ * as the value itself, several as an array. The plugin's own components destructure
+ * `children` from props (React's contract), so a stub that only kept them on the
+ * node would silently render nothing. They stay on the node too, because the
+ * assertion helpers walk that form.
+ */
+const createElement = (type, props, ...children) => {
+  const flat = children.flat(Infinity);
+  const base = props ?? {};
+  const resolved = flat.length === 0
+    ? base
+    : { ...base, children: flat.length === 1 ? flat[0] : flat };
+  return { type, props: resolved, children: flat };
+};
 
 // --- hook runtime ---------------------------------------------------------
 let hookState = [];
@@ -233,18 +245,44 @@ function textOf(node) {
 }
 
 /**
+ * Every rendered element in a built tree, with function components invoked.
+ *
+ * `textOf` flattens text and stops there, so it cannot answer "did this icon
+ * render as real svg, and did its colour override survive". This walks the same
+ * way but collects the element nodes themselves.
+ * @param node - built tree root.
+ * @returns the rendered elements, outermost first.
+ */
+function collectElements(node) {
+  if (node === null || node === undefined || typeof node !== "object") return [];
+  if (Array.isArray(node)) return node.flatMap(collectElements);
+  if (typeof node.type === "function") {
+    let out;
+    try {
+      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+    } catch {
+      return [];
+    }
+    return collectElements(out);
+  }
+  return [node, ...collectElements(node.children)];
+}
+
+/**
  * Depth-first search for an interactive node by label. Matches the rendered text
  * or the accessible name, because the strip's buttons are icon-only.
  */
 /**
- * Find the fault dialog in a built tree, if it is open.
+ * Find the fault dialog's rendered element, if it is open.
  *
- * `h(ui.Modal, ...)` stores the component FUNCTION as `type`, so a node only
- * becomes `type: "Modal"` after the stub runs — and the stub returns `null` while
- * `open` is false. Searching for the rendered string instead would miss the title,
- * which `Modal` takes as a prop rather than a child.
+ * The plugin draws its own modal (it loads no Harness Client package), so the
+ * dialog is located by the accessibility contract it puts in the DOM rather than
+ * by a component name: a node carrying `role="dialog"` and `aria-modal="true"`.
+ * Function components are invoked on the way down because the dialog only becomes
+ * markup once the modal component runs, and the portal is descended through
+ * because that is where the modal mounts its tree.
  * @param node - built tree root.
- * @returns the Modal node when the dialog is open, otherwise undefined.
+ * @returns the rendered dialog element when the dialog is open, otherwise undefined.
  */
 function findDialog(node) {
   if (node === null || node === undefined || typeof node !== "object") return undefined;
@@ -255,16 +293,17 @@ function findDialog(node) {
     }
     return undefined;
   }
-  if (node.type === "Modal") return node;
+  if (node.type === "Portal") return findDialog(node.children);
   if (typeof node.type === "function") {
-    const produced = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
-    if (produced !== null && produced !== undefined && typeof produced === "object") {
-      if (produced.type === "Modal") return produced;
-      const nested = findDialog(produced);
-      if (nested) return nested;
+    let produced;
+    try {
+      produced = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+    } catch {
+      return undefined;
     }
-    return undefined;
+    return findDialog(produced);
   }
+  if (node.props?.role === "dialog" && node.props?.["aria-modal"] === "true") return node;
   return findDialog(node.children);
 }
 
@@ -482,11 +521,20 @@ check(text.includes("连接故障"), "a configured-but-disconnected server must 
 // The dialog must open by itself — this is the whole point of the feature.
 const dialogNode = findDialog(render(disconnectedProps));
 check(dialogNode !== undefined, "the fault dialog must open on its own when a configured server registers no tools");
-check(dialogNode?.props.title === "MCP 连接故障", "the dialog must be titled as a fault");
-const dialogText = dialogNode === undefined ? [] : [...textOf(dialogNode.children), ...textOf(dialogNode.props.footer)];
+check(dialogNode?.props?.["aria-label"] === "MCP 连接故障", "the dialog must be titled as a fault");
+const dialogText = dialogNode === undefined ? [] : textOf(dialogNode.children);
 check(has(dialogText, "没有任何一个注册了工具"), "the dialog must state the fault plainly");
 check(has(dialogText, "mcp-local"), "the dialog must name the affected servers");
 check(has(dialogText, "知道了"), "the dialog must be dismissible");
+// The bundle draws its own controls now, so the icon has to be real svg markup and
+// a call site's colour override has to survive the component: an icon that drops
+// `style` renders in the inherited colour and the fault loses its red cue.
+const dialogSvgs = dialogNode === undefined ? [] : collectElements(dialogNode).filter((n) => n.type === "svg");
+check(dialogSvgs.length > 0, "the fault mark must render as real svg markup");
+check(
+  dialogSvgs.some((n) => String(n.props.style?.color ?? "").includes("state-error-primary")),
+  "an icon's colour override must pass through to the rendered svg",
+);
 const expand4b = findButton(render(disconnectedProps), "明细");
 if (expand4b) expand4b.props.onClick();
 await flush();
