@@ -767,3 +767,72 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 - 本次没有强行把已存在的工作区文件重排为 LF（`git checkout-index` 不会重写内容等价的文件）。所以**当前这棵工作区仍是 CRLF**，而 tarball 混了两种形式（`client.js` 为 CRLF、`index.js` 为 LF）。
 - 因此：**HANDOFF 里的哈希记录各自对应其 tarball 的实际形式，跨换行比较会不一致**。核对哈希时要么按 LF 归一，要么用 `verify-pack`（它已忽略换行）。
 - 新克隆/新机器会得到干净的 LF 工作区；下一次发版打出的 tarball 也是纯 LF，之后的哈希记录才真正稳定。
+
+---
+
+## 16. 维护前先拉取（多会话、多机器同时改同一个仓库）
+
+**铁律：动手改任何文件之前，先 `git pull`。**
+
+这个仓库不是单人单会话在写。同一台机器上可能有多个 DSH 会话在改不同插件，多台机器也在推同一个
+`main`。仓库本身是共享的、不是谁的私有工作区，所以"我这边好好的"不构成不拉取的理由。
+
+### 16.1 开工三步
+
+```powershell
+cd dsh-plugins
+git pull --ff-only origin main      # 先同步；报错说明有本地提交，见 16.3
+git status --short                  # 应当没有任何输出；有输出先弄清是谁的改动
+node scripts/check-all.mjs          # 拉到的代码本身是绿的，再动手
+```
+
+先跑一次 `check-all` 的意义：**把"别人的红"和"你引入的红"分开**。不先取基线，出了问题无法判断是谁改坏的。
+
+### 16.2 提交前再同步一次
+
+```powershell
+git fetch origin main
+git log --oneline HEAD..origin/main    # 有输出=别人又推进了，先整合再推
+```
+
+只 `git pull` 一次是不够的：从开工到提交之间别人可能已经推了。
+
+### 16.3 push 被拒时怎么做（2026-11-09 本机真实发生过两次）
+
+```
+! [rejected]  main -> main (fetch first)
+hint: Updates were rejected because the remote contains work that you do not have locally.
+```
+
+处理顺序，**不要跳步**：
+
+1. `git fetch origin main`
+2. `git log --oneline HEAD..origin/main` —— 看清别人新增了哪些提交
+3. `git diff --stat HEAD...origin/main` —— 看清涉及哪些文件（共享文档冲突概率最高）
+4. `git rebase origin/main`
+5. 冲突**取并集**：两边的新增都要保留，禁止整块用自己的覆盖。
+6. 冲突解决后**必须验证双方成果都在**：对方新增的文件存在、对方插件的检查仍通过、自己的检查仍通过
+7. 再 push
+
+**绝不 `git push --force`。** 那会抹掉别人已经推上去的提交，是不可逆的破坏。
+
+### 16.4 两次真实事故（照抄下来的教训）
+
+| 日期 | 场景 | 结果 |
+| --- | --- | --- |
+| 2026-11-09 | 另一个会话先推了 `dsh-read-img`（2 个提交），我这边也没拉就推 | `rejected (fetch first)`；`git diff HEAD...origin/main` 显示对方也改了 `INSTALL.md` / `README.md`；rebase 后冲突在 §14 的插件清单，取并集（保留对方的 `dsh-read-img` 链接 + 我的 §15），复核三个插件齐全、双方检查都通过才推 |
+| 2026-11-09 | 同一时段另一次推送 | 同样 `rejected`；说明这不是偶发，是多人并发改同一仓库的常态 |
+
+两次都没有丢数据，靠的是"fetch → 看清差异 → rebase → 取并集 → 双向验证"，而不是靠手快。
+
+### 16.5 拉取不会破坏已发布的产物
+
+`dist/` 与 `*.tgz` 都在 `.gitignore` 里，**不在版本控制内**。所以 `git pull` 永远不会覆盖、删除任何机器上
+已经打好的 tarball，也不会改动 `$DSH_HOME` 下的 profile。拉取只影响源码与文档。
+
+这也是"发布用 tarball + 源码与安装副本物理隔离"（§0）带来的额外好处：同步和发布是两件互不干扰的事。
+
+### 16.6 共享文件的额外注意
+
+`README.md` 与 `INSTALL.md` 是改动最频繁、冲突概率最高的两个文件。改它们之前**先 pull**，
+改完尽快提交推送，缩短冲突窗口。插件目录内的文件只由负责该插件的会话改，冲突面小得多。

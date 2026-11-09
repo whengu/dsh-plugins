@@ -144,6 +144,11 @@
 
 ## 6. 维护手册
 
+> **动手前先 `git pull`。** 这个仓库有多个会话、多台机器同时改同一个 `main`：push 被拒
+> （`rejected (fetch first)`）是常态而不是意外。`fetch` → 看清差异 → `rebase` → 冲突取并集 →
+> 双向验证 → 再推；**绝不 `--force`**。完整流程与判据见仓库根 `INSTALL.md` §16。
+> 装插件动作本身也会改 `~/.dsh`，那部分**不进 git**，但同样建议动之前先确认 profile 现状。
+
 ### 改端点 / 换模型 / 换 key
 
 改 profile 的 `cordis.patch.yml` 里 `- id: read-img` 的 `config`，保存即热生效（loader 监听该文件）。**不需要**改源码、不需要重装。
