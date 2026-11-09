@@ -21,7 +21,7 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 | --- | --- | --- | --- | --- |
 | [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.5.0 | `web` profile **0.5.0**，真机页面验收通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
 | [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.1 | `web` profile **0.1.0**（0.1.1 只加了测试，`lib/` 未改；发版后需重启 Host） | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
-| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.6 | **本机未安装**（该插件文档所述 0.1.5 安装在本机已不存在，见下方沿革） | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.6 | `web` profile **0.1.6**（2026-11-09 装入，模型配置沿用原 `tool-vision`；装完无需重启 Host，已实测生效） | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
 
 > 「已装版本」是**实测值**（读 `$DSH_HOME/profiles/<profile>/node_modules/<包名>/package.json`），不是推断。核对命令见 [INSTALL.md §11.5](INSTALL.md#115-升级)。
 

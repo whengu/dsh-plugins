@@ -1,6 +1,6 @@
 # dsh-read-img
 
-状态：仓库源码 **0.1.6**（2026-11-09 评审修复，尚未重新安装）；线上 `web` profile 当前装的是 **0.1.5**。0.1.6 的本地验证：`check` 通过、离线用例 42/42、插件用例 11/11（无需 `node_modules`）、live 用例在无 provider 配置时**明确 skip**。**纯 Host 侧插件**（无 `dsh.client`），不涉及浏览器 `Ctrl+F5`；替换已安装包的宿主 JS 需要重启 Host（见仓库根 [INSTALL.md §15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)）。
+状态：仓库源码 **0.1.6**，**已于 2026-11-09 装入 `web` profile 并实测生效**（模型配置沿用被替换掉的第三方 `tool-vision`：`baseURL` `http://192.168.155.44:8000/llm-router-buss/v1`、`model` `group/vision`、`maxTokens` 24096）。0.1.6 的本地验证：`check` 通过、离线用例 42/42、插件用例 11/11（无需 `node_modules`）、live 用例在无 provider 配置时**明确 skip**。**纯 Host 侧插件**（无 `dsh.client`），不涉及浏览器 `Ctrl+F5`。注意：**新装** bundle 可经 HMR 激活（当日实测：装完未重启 Host，`read_img` 即可调用）；而**替换**已安装包的宿主 JS 才需要重启 Host（见仓库根 [INSTALL.md §15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)）。
 
 ## 作用
 

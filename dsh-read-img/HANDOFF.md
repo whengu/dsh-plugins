@@ -22,7 +22,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile，线上版本 `0.1.5`（2026-11-09 以 tarball 安装，`file:/plugins/dist/dsh-read-img-0.1.5.tgz`，该路径是安装时的 staging 路径）；**仓库源码已到 `0.1.6`，尚未安装** |
+| 安装 | `web` profile，`0.1.6`（2026-11-09 以 tarball 装入 `file:/dsh-read-img/dist/dsh-read-img-0.1.6.tgz`）。同一操作里**卸载了第三方 `dsh-tool-vision` 0.10.6**（依赖 / bundles / node_modules 三处均已清除），模型配置照抄它（baseURL / apiKey / model / maxTokens）；装完**未重启 Host** 即生效（实测 `read_img` 可调用、`read_image` 被拒绝） |
 | 装载 | 线上跑的是 0.1.5：`include:read-img`，`fiberPhase: active`，热加载。装 0.1.6 时替换的是宿主 JS，**必须重启 Host**（仓库根 INSTALL.md §15.1） |
 | 静态检查 | `pnpm check` 通过（5 个 lib 文件语法 + 包契约 + patch 契约 + `engines.dsh` 单一下限） |
 | 离线用例 | **42/42** 通过（`pnpm test`，零依赖） |
@@ -177,3 +177,51 @@
 - [ ] 安装副本 `LinkType` 为空
 - [ ] 调一次 `read_img` 返回描述；错误路径返回可读报错
 - [ ] 源码哈希与本表一致（或已知差异有记录）
+
+## 8. 首次正式安装（2026-11-09）
+
+这一步把本插件换掉第三方读图插件，成为 `web` profile 里唯一的读图工具。
+
+**做了什么**
+
+1. 备份 `~/.dsh/profiles/web/cordis.patch.yml`（`*.bak-20261109-readimg`），随后把 profile 里的
+   `- id: tool-vision`（包 `dsh-tool-vision` 0.10.6）整块替换为 `- id: read-img` + `- config`。
+   `git diff --no-index` 比对确认差异**只有**这一处：模型配置原样照抄（`baseURL`
+   `http://192.168.155.44:8000/llm-router-buss/v1`、`apiKey` `"12345678"`、`model` `group/vision`、
+   `maxTokens` 24096），并去掉 `bridgeTextOnly` / `autoDetectMultimodal` / `sendSessionHeader`
+   三个只属于 tool-vision 的键。
+2. `dsh plugin --profile web add ./dist/dsh-read-img-0.1.6.tgz`。
+3. `dsh plugin --profile web remove dsh-tool-vision`。三处已确认清除：`dependencies`、
+   `dsh.profile.bundles`、`node_modules`。
+
+**为什么这个顺序**：先把包装好、再一次性替换 patch 行、最后移除旧包，任何中间状态都自洽
+（不会出现"行引用了未安装的包"）。
+
+**关键结论：不需要重启 Host。** 官方口径是「**新装** bundle 可经 HMR 激活，**替换**已安装包才需重启」；
+本包此前从未在这个进程里加载过，所以 specifier 是新的。实测证实：
+
+- 装完直接调用 `read_img` → 返回准确描述（红方块左上、蓝方块右下、共 2 个图形）
+- 调用内置 `read_image` → 被拒绝，报文是**本插件自己**的：`read_image is hidden in this deployment … Use read_img with the image's path instead`
+- `dsh --profile web --dump-config` 有 `- id: read-img`，config 完整，**无** `read-img` / `tool-vision` 相关告警
+
+**端点验证**（离线用例覆盖不到的部分，单独做过）
+
+- `GET {base}/models` 可达，13 个模型，含 `group/vision`
+- 按 `callVision` 的真实请求体（含 `chat_template_kwargs.enable_thinking: false`）打一次：1.43s、
+  `finish_reason: stop`、231 completion tokens，返回内容正确
+- 对照实验证明**图片数据确实送达模型**：纯蓝图答「蓝色」、纯绿图答「绿色」、不带图答「无法判断」
+- 模型对 `test/fixtures/red-square.png` 的描述经像素级核对是**准确**的（红块 48×48 在左上、
+  蓝块 32×32 在右下）。注意：该 fixture 名字只提到红色，实际含蓝块；**只采样几个像素会误判为
+  "模型幻觉"，要做颜色直方图**——这条留给后来者避免同样的错判。
+
+**顺带发现的既有问题（未改动，需用户决定）**
+
+`--dump-config` 里有 3 条既存的 `entry … not found`（均与本次安装无关）：
+
+| 死条目 | 成因 |
+| --- | --- |
+| `dsh-context` | 包已装（0.81.0）但**不在 `dsh.profile.bundles`**，bundle 未加载 → 该行及其 `defaultDurationCurve` 从未生效 |
+| `plugin-market` | 行名 `@deepseek-ai/dsh-plugin-market`，实际启用的是 `dshmarket` bundle，该行无对应条目 |
+| `dsh-image-pathify` | 包根本没装（依赖与 `node_modules` 都没有），只剩配置行；其职能与本插件重叠 |
+
+它们只 warn 后跳过，不影响启动，但**配置从未生效**。清理属于用户资产变更，需明确同意后再动。
