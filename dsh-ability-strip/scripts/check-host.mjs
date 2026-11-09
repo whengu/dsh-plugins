@@ -13,10 +13,8 @@ import {
 	MAX_CACHED_SCOPES,
 	MAX_DESCRIPTION_CHARS,
 	name,
-	openEventStream,
 	ROUTE_CHANNEL,
 	ROUTE_ENDPOINT,
-	ROUTE_EVENTS_ENDPOINT,
 	readToolSummary,
 	splitMcpToolName,
 	summarizeMcpTools,
@@ -184,11 +182,14 @@ const scopeRecorder = () => {
 	check(degraded.scope === "global", "a throwing agents lookup must degrade to the global view, and say so");
 }
 
-// --- createToolSummaryReader: one listener, two jobs -----------------------
-// The cache invalidation and the browser's change signal are the same fact, so
-// they must come from ONE `tools/change` subscription. This pins that: subscribers
-// hear a change exactly once, never on subscribe, and never after detaching.
+// --- createToolSummaryReader: cache, memory, invalidation -------------------
+// Two different jobs in one reader: `cached` holds the CURRENT answer and is dropped
+// when the registry moves; `remembered` holds the last answer a live agent produced
+// and is kept, because that is history rather than a cache. The tests below pin both,
+// and pin that the remembered answer is what a released agent's session falls back to
+// instead of the deployment catalog.
 let readerSchemas = 0;
+let readerAgent;
 const readerChangeListeners = [];
 const reader = createToolSummaryReader({
 	tools: {
@@ -196,6 +197,10 @@ const reader = createToolSummaryReader({
 			readerSchemas += 1;
 			return [{ name: "mcp__local__x" }];
 		},
+	},
+	get(name) {
+		if (name !== "agents") return void 0;
+		return { get: () => readerAgent };
 	},
 	on(_event, listener) {
 		readerChangeListeners.push(listener);
@@ -205,23 +210,54 @@ const reader = createToolSummaryReader({
 		};
 	},
 });
-check(reader.version === 0, "the change version must start at 0");
 check(readerChangeListeners.length === 1, "the reader must hold exactly one tools/change listener");
-const heard = [];
-const detach = reader.subscribe((version) => heard.push(version));
-check(heard.length === 0, "subscribing must not announce a change that did not happen");
-check(readerSchemas === 0, "subscribing must not read the registry");
-reader.read();
+
+// --- with a live agent: a fresh answer, remembered ---------------------------------
+readerAgent = { id: "s-1" };
+const live = reader.read("s-1");
+check(live.scope === "agent", "a live agent must produce an agent-scope answer");
+check(live.stale === void 0, "a live answer must not be marked stale");
 check(readerSchemas === 1, "a read must call schemas() once");
-reader.read();
+reader.read("s-1");
 check(readerSchemas === 1, "a repeat read must be served from the cache");
+check(reader.remembered === 1, "a live answer must be remembered for its session");
+
+// --- the registry moves: the cache goes, the memory stays --------------------------
 readerChangeListeners[0]();
-check(reader.version === 1, "a tools/change must bump the version");
-check(heard.length === 1 && heard[0] === 1, `a tools/change must notify subscribers once with the new version, saw ${JSON.stringify(heard)}`);
-detach();
-readerChangeListeners[0]();
-check(heard.length === 1, "a detached subscriber must stop hearing changes");
-check(reader.version === 2, "the version must keep counting after a detach");
+check(readerChangeListeners.length === 1, "a tools/change must not detach the listener");
+reader.read("s-1");
+check(readerSchemas === 2, "a tools/change must drop the cached answer");
+
+// --- the agent is released: fall back to the remembered answer, marked -------------
+readerAgent = void 0;
+const remembered = reader.read("s-1");
+check(remembered.scope === "agent", "a remembered answer must keep its agent scope");
+check(remembered.stale === true, "a remembered answer must be marked stale");
+check(
+	typeof remembered.recordedAt === "string" && remembered.recordedAt.length > 0,
+	"a remembered answer must carry the time it was read",
+);
+check(
+	remembered.totalTools === live.totalTools,
+	"the remembered answer must be the session's own numbers, not the deployment catalog",
+);
+
+// --- a session that never had a live agent: nothing is invented --------------------
+const never = reader.read("s-2");
+check(never.scope === "global", "a session with no history must answer from the global view");
+check(never.stale === void 0, "a global answer must not pretend to be a remembered one");
+
+// --- a Host restart: the memory is gone, so nothing is claimed --------------------
+const restarted = createToolSummaryReader({
+	tools: { schemas: () => [{ name: "read" }] },
+	get: () => void 0,
+	on: () => () => {},
+});
+const cold = restarted.read("s-1");
+check(cold.scope === "global", "after a restart a session has no remembered answer");
+check(restarted.remembered === 0, "a fresh reader must remember nothing");
+restarted.dispose();
+
 reader.dispose();
 check(readerChangeListeners.length === 0, "dispose must drop the tools/change listener");
 
@@ -246,14 +282,19 @@ const readScoped = (id) => boundedReader.read(id);
 for (let index = 0; index < MAX_CACHED_SCOPES; index += 1) readScoped(`scope-${index}`);
 const callsAtCap = boundedSchemas;
 check(callsAtCap === MAX_CACHED_SCOPES, `each new scope must read once, saw ${callsAtCap}`);
+// A hit refreshes recency, so the scope the reader keeps opening is not the one
+// dropped for a scope it never revisited.
 readScoped("scope-0");
 check(boundedSchemas === callsAtCap, "a scope still inside the cap must be served from the cache");
-// One past the cap evicts the oldest scope, so it is read again instead of growing.
+// One past the cap evicts the least recently used scope — scope-1, not scope-0,
+// because scope-0 was just touched.
 readScoped(`scope-${MAX_CACHED_SCOPES}`);
 readScoped("scope-0");
+check(boundedSchemas === callsAtCap + 1, `the just-touched scope must survive the eviction, saw ${boundedSchemas - callsAtCap} extra reads`);
+readScoped("scope-1");
 check(
 	boundedSchemas === callsAtCap + 2,
-	`the oldest scope must be evicted past the cap, saw ${boundedSchemas - callsAtCap} extra reads`,
+	`the least recently used scope must be evicted, saw ${boundedSchemas - callsAtCap} extra reads`,
 );
 // The newest scope is still cached: eviction is bounded, not a flush.
 const callsBeforeHit = boundedSchemas;
@@ -314,26 +355,22 @@ const fakeCtx = {
 };
 
 apply(fakeCtx);
-// Two routes, two verbs, two shapes: the answer route answers a request, the
-// change stream stays open and pushes. Keeping them apart is a contract, not a
-// detail — a GET stream must never be reachable through `rpc.call`.
-// The wire path, written out rather than derived: the browser half hardcodes the
+// One route, one verb: the strip reads on demand now. There is no change stream to
+// open, so registering a second path would be dead weight the browser never used.
+// The wire path is written out rather than derived: the browser half hardcodes the
 // same string, and the two halves only work together if both say exactly this.
-const EVENTS_WIRE_PATH = "/api/ability-strip/events";
+const WIRE_PATH = "/api/ability-strip";
 check(
-	`${ROUTE_CHANNEL}/${ROUTE_EVENTS_ENDPOINT}` === EVENTS_WIRE_PATH,
-	"the exported stream path must stay the wire contract the browser half opens",
+	`${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}` === WIRE_PATH,
+	"the exported path must stay the wire contract the browser half posts to",
 );
-const summaryRoute = registered.find((entry) => entry.path === `${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}`);
-const eventsRoute = registered.find((entry) => entry.path === EVENTS_WIRE_PATH);
-check(registered.length === 2, `apply must register exactly two routes, saw ${registered.length}`);
+const summaryRoute = registered.find((entry) => entry.path === WIRE_PATH);
+check(registered.length === 1, `apply must register exactly one route, saw ${registered.length}`);
 check(summaryRoute !== undefined, "the answer route must sit at channel/endpoint");
-check(eventsRoute !== undefined, "the change stream must sit at channel/<endpoint>/events");
-check(summaryRoute !== eventsRoute, "the two routes must be distinct");
 
 // Everything below drives those two routes, so stop here with the reason rather than
 // crashing on `undefined` and reporting a TypeError.
-if (summaryRoute === undefined || eventsRoute === undefined) {
+	if (summaryRoute === undefined) {
 	console.log("PROBLEMS:");
 	for (const problem of problems) console.log("  - " + problem);
 	console.log("RESULT: FAIL");
@@ -348,13 +385,6 @@ check(
 check(summaryRoute.requestBody === "buffered", "the answer route takes a buffered body");
 check(typeof summaryRoute.fetch === "function", "the answer route must expose a fetch handler");
 
-check(eventsRoute.path.startsWith("/api/"), "the change stream must use the same authenticated channel");
-check(
-	Array.isArray(eventsRoute.methods) && eventsRoute.methods.length === 1 && eventsRoute.methods[0] === "GET",
-	"a browser EventSource opens the change stream with GET, so it is GET-only",
-);
-check(eventsRoute.requestBody === "buffered", "the change stream declares a buffered (empty) request body");
-check(typeof eventsRoute.fetch === "function", "the change stream must expose a fetch handler");
 
 /** POST one client-request envelope to the answer route and return the reply. */
 async function readSummary(rpcId) {
@@ -447,203 +477,50 @@ check(
 await readSummaryWith({ sessionId: "session-a" });
 check(schemasCalls === callsBefore + 2, "a repeat read from the same session must be cached");
 
-// --- the change stream ----------------------------------------------------
-// Decode one SSE frame. `EventSource` ignores comment lines, so the stream opens
-// with one: it proves the channel is live before anything has changed.
-const decoder = new TextDecoder();
-const frameValue = (text) => {
-	const line = text.split("\n").find((part) => part.startsWith("data: "));
-	return line === void 0 ? void 0 : JSON.parse(line.slice("data: ".length));
+
+// --- the remembered answer is per session, too ------------------------------
+// Memory must not leak across sessions any more than the cache may: session A's last
+// numbers are not session B's.
+const memoryCtx = {
+	tools: { schemas: () => [{ name: "read" }] },
+	get: () => void 0,
+	on: () => () => {},
 };
-const openStream = async () => {
-	const abort = new AbortController();
-	const opened = await eventsRoute.fetch(
-		new Request("http://localhost" + eventsRoute.path, { method: "GET", signal: abort.signal }),
-	);
-	return { abort, opened };
-};
+const memoryReader = createToolSummaryReader(memoryCtx);
+check(memoryReader.read("unknown-session").scope === "global", "an unseen session reads global");
+check(memoryReader.remembered === 0, "a global answer must never be remembered as a session answer");
+memoryReader.dispose();
 
-// Invalidate first, so the cache is COLD when the stream opens: any registry read
-// during that open would then be visible as a `schemas()` call, instead of being
-// hidden by a warm cache.
-changeListeners[0]();
-const callsBeforeStream = schemasCalls;
-const live = await openStream();
-check(
-	schemasCalls === callsBeforeStream,
-	`opening the change stream must not consult the registry at all (it relays a counter, not the catalog): saw ${schemasCalls - callsBeforeStream} schemas() call(s)`,
-);
-check(live.opened.status === 200, "the change stream must answer 200");
-check(
-	live.opened.headers.get("content-type") === "text/event-stream",
-	"the change stream must declare text/event-stream",
-);
-check(
-	(live.opened.headers.get("cache-control") ?? "").includes("no-cache"),
-	"a change stream must not be cached",
-);
-const streamReader = live.opened.body.getReader();
-const preamble = decoder.decode((await streamReader.read()).value);
-check(preamble.startsWith(": "), "the stream must open with an SSE comment, not with a change claim");
-const greeting = frameValue(decoder.decode((await streamReader.read()).value));
-check(typeof greeting?.version === "number", "the first data frame must carry the current change version");
-// The cache is still cold, so this read must reach the registry exactly once: that
-// is the change that invalidated it being honoured, and no other read in between.
-await readSummary("rpc-4");
-check(
-	schemasCalls === callsBeforeStream + 1,
-	`the change that invalidated the cache must make the next read fresh, saw ${schemasCalls - callsBeforeStream} schemas() call(s)`,
-);
-
-// The registry moving is the only thing that pushes: one frame, carrying the bumped
-// version, with no request from the browser.
-const versionBeforeChange = greeting.version;
-const callsBeforePush = schemasCalls;
-changeListeners[0]();
-const pushed = frameValue(decoder.decode((await streamReader.read()).value));
-check(pushed?.version === versionBeforeChange + 1, `a tools/change must push the next version, saw ${JSON.stringify(pushed)}`);
-check(
-	schemasCalls === callsBeforePush,
-	"pushing a frame must not read the registry either",
-);
-
-/**
- * Read one chunk, or give up after a beat.
- *
- * A stream that should have ended but did not would otherwise leave this script
- * awaiting forever — Node exits 13 with no message at all. A broken end-of-stream
- * must fail with a readable problem instead of looking like a hang.
- * @param reader - reader on the response body.
- * @param ms - how long to wait before declaring the stream still open.
- * @returns the read result, or `{ done: false, timedOut: true }`.
- */
-async function readWithin(reader, ms = 2000) {
-	let timer;
-	const expired = new Promise((resolve) => {
-		timer = setTimeout(() => resolve({ done: false, timedOut: true }), ms);
-	});
-	const result = await Promise.race([reader.read(), expired]);
-	clearTimeout(timer);
-	return result;
-}
-
-// The browser going away must end the stream. The carrier's request bridge drains
-// the response body until it ends, so a body left open would leak a responder and a
-// subscriber per closed tab.
-live.abort.abort();
-const afterAbort = await readWithin(streamReader);
-check(afterAbort.done === true, "aborting the request must end the change stream (it was still open afterwards)");
-
-// Unloading must drop the listener, or a dead row keeps watching a live service,
-// and must end every stream this row opened, or a closed row keeps a body open.
-const effectDisposer = fakeCtx.effectDisposer;
-check(typeof effectDisposer === "function", "apply must register one effect");
-const doomed = await openStream();
-const doomedReader = doomed.opened.body.getReader();
-// An open stream has already queued its two opening frames (the comment preamble
-// and the initial version), so drain them before asking whether it is still open.
-await doomedReader.read();
-await doomedReader.read();
-await effectDisposer();
-check(changeListeners.length === 0, "unloading must drop the tools/change listener");
-check(disposed.length === 2, `unloading must dispose both routes, saw ${disposed.length}`);
-const afterUnload = await readWithin(doomedReader);
-check(afterUnload.done === true, "unloading must end every open change stream (it was still open afterwards)");
-
-check(name === "ability-strip", "the plugin id must stay stable");
-check(Array.isArray(inject) && inject.includes("connection") && inject.includes("tools"), "inject must name both services");
-
-// --- the leak invariant, per teardown path --------------------------------
-// The reader the route uses is created inside `apply` and is unreachable from
-// outside, so `openEventStream` is driven directly here with a counting reader.
-// The invariant is the same one `apply`'s disposer relies on: however a stream
-// ends, it must leave no subscriber behind and no entry in the unload set, or a
-// dead tab's subscriber outlives its stream for the life of the process.
-const countingReader = {
-	version: 7,
-	/** Live frame handlers, exactly what `createToolSummaryReader` keeps. */
-	subs: new Set(),
-	subscribe(listener) {
-		this.subs.add(listener);
-		return () => this.subs.delete(listener);
+// --- a global answer must not stick once its agent appears -------------------
+// The reverse of the case above, and the one that was missing: a session that reads
+// while it has no agent caches a deployment-catalog answer, and the agent's arrival
+// is NOT a `tools/change` (the registry itself did not move). A plain cache hit would
+// therefore serve "no active agent" forever, even after the session came alive.
+let wakeSchemas = 0;
+let wakeAgent;
+const wakeReader = createToolSummaryReader({
+	tools: {
+		schemas: () => {
+			wakeSchemas += 1;
+			return [{ name: "read" }];
+		},
 	},
-	/** Deliver one change the way `invalidate` does. */
-	fire() {
-		for (const listener of [...this.subs]) listener(this.version);
-	},
-};
-const openStandalone = async () => {
-	const abort = new AbortController();
-	const streams = new Set();
-	const opened = openEventStream(countingReader, { signal: abort.signal }, streams);
-	return { abort, streams, opened, reader: opened.body.getReader() };
-};
+	get: () => ({ get: () => wakeAgent }),
+	on: () => () => {},
+});
+const wakeCold = wakeReader.read("w");
+check(wakeCold.scope === "global", "a session with no agent must read the deployment catalog first");
+wakeAgent = { id: "w" };
+const wakeWarm = wakeReader.read("w");
+check(wakeWarm.scope === "agent", "once the agent appears, the cached global answer must not be reused");
+check(wakeSchemas === 2, `liveness changing must force a re-read, saw ${wakeSchemas}`);
+wakeReader.dispose();
 
-// Path 1: the browser goes away (request signal aborts).
-const gone = await openStandalone();
-check(countingReader.subs.size === 1, `one open stream must hold one subscriber, saw ${countingReader.subs.size}`);
-check(gone.streams.size === 1, `one open stream must be recorded for unload, saw ${gone.streams.size}`);
-const firstFrame = decoder.decode((await gone.reader.read()).value);
-check(firstFrame.startsWith(": "), "a standalone stream must open with the same SSE comment");
-// Drain the opening version frame before firing, and bump the version so the pushed
-// frame cannot be mistaken for it — a same-version assertion would pass on the
-// greeting alone and prove nothing.
-const greetingFrame = frameValue(decoder.decode((await gone.reader.read()).value));
-check(greetingFrame?.version === 7, `the opening frame must carry the current version, saw ${JSON.stringify(greetingFrame)}`);
-countingReader.version = 8;
-countingReader.fire();
-const pushedFrame = frameValue(decoder.decode((await gone.reader.read()).value));
-check(
-	pushedFrame?.version === 8,
-	`a change must push the reader's new version, saw ${JSON.stringify(pushedFrame)}`,
-);
-gone.abort.abort();
-check((await readWithin(gone.reader)).done === true, "abort must end a standalone stream");
-check(countingReader.subs.size === 0, `abort must remove the subscriber, saw ${countingReader.subs.size} left`);
-check(gone.streams.size === 0, `abort must leave nothing for unload to close, saw ${gone.streams.size}`);
-
-// Path 2: the consumer cancels the body.
-const cancelled = await openStandalone();
-await cancelled.reader.read();
-await cancelled.reader.cancel();
-check(countingReader.subs.size === 0, `cancelling the body must remove the subscriber, saw ${countingReader.subs.size} left`);
-check(cancelled.streams.size === 0, `cancelling the body must leave nothing for unload, saw ${cancelled.streams.size}`);
-
-// Path 3: the plugin unloads and closes the set.
-const unloaded = await openStandalone();
-const entries = [...unloaded.streams];
-check(entries.length === 1, `an open stream must be the one entry in the unload set, saw ${entries.length}`);
-// Hold the frame handler across the teardown: a subscriber that outlived its stream
-// must be an inert no-op, not a throw into the registry's `tools/change` emit.
-const staleHandler = [...countingReader.subs][0];
-for (const shutdown of entries) shutdown();
-check(countingReader.subs.size === 0, `unload must remove the subscriber, saw ${countingReader.subs.size} left`);
-check(unloaded.streams.size === 0, `unload must empty the set it walked, saw ${unloaded.streams.size}`);
-let staleThrew = false;
-try {
-	staleHandler(99);
-} catch (error) {
-	staleThrew = error;
-}
-check(staleThrew === false, `a frame arriving after teardown must be a no-op, saw ${String(staleThrew)}`);
-check(countingReader.subs.size === 0, "a stale frame must not re-attach a subscriber");
-// Teardown is idempotent: a second pass over an already-closed stream must not
-// reach back into the reader (e.g. re-adding a subscriber).
-entries[0]();
-check(countingReader.subs.size === 0, "a repeated teardown must not resurrect a subscriber");
-// Nothing is left behind by any of the three paths.
-check(countingReader.subs.size === 0, `no teardown path may leak a subscriber, saw ${countingReader.subs.size}`);
-
-console.log("--- host half ---");
-console.log("servers:", JSON.stringify(summary));
-console.log("answer route:", summaryRoute.path, JSON.stringify(summaryRoute.methods));
-console.log("change stream:", eventsRoute.path, JSON.stringify(eventsRoute.methods), live.opened.headers.get("content-type"));
-console.log("schemas() calls across 5 reads, 3 tools/change and 2 streams:", schemasCalls);
+console.log("---");
 if (problems.length > 0) {
-  console.log("PROBLEMS:");
-  for (const problem of problems) console.log("  - " + problem);
-  console.log("RESULT: FAIL");
-  process.exitCode = 1;
-} else {
-  console.log("RESULT: PASS");
+	console.log("PROBLEMS:");
+	for (const problem of problems) console.log("  - " + problem);
+	console.log("RESULT: FAIL");
+	process.exit(1);
 }
+console.log("RESULT: PASS")

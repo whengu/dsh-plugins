@@ -407,7 +407,7 @@ window.__ModuleLoader__.load({
 		/**
 		 * Carrier channel both halves use: the shared `/api` route the client
 		 * `Connection` mounts. The leading slash is load-bearing — see
-		 * {@link EVENTS_PATH} and `readTools`.
+		 * same slice is applied here deliberately, not for symmetry. See `readTools`.
 		 */
 		const API_CHANNEL = "/api";
 
@@ -418,26 +418,47 @@ window.__ModuleLoader__.load({
 		 */
 		const TOOL_ENDPOINT = "ability-strip";
 
-		/**
-		 * Endpoint of the host half's registry **change stream** (`ROUTE_EVENTS_ENDPOINT`
-		 * there, which this must equal). The host keeps it open and writes one frame
-		 * per `tools/change`; the strip answers a frame by re-reading, so the MCP
-		 * answer stays live without any timer on this page.
-		 */
-		const EVENTS_ENDPOINT = "ability-strip/events";
-
-		/**
-		 * Change stream as a **document-relative** path.
-		 *
-		 * `rpc.call` builds `${channel}/${endpoint}` and then slices the leading
-		 * slash off, and web routes are document-relative for the same reason: an app
-		 * served below a base path would never match a route resolved from "/". The
-		 * same slice is applied here deliberately, not for symmetry.
-		 */
-		const EVENTS_PATH = `${API_CHANNEL}/${EVENTS_ENDPOINT}`.slice(1);
 
 		/** Muted inline text for a pending or absent answer. */
-		const MUTED = { fontSize: 11, opacity: 0.55 };
+		/**
+ * Render a timestamp for a remembered reading.
+ *
+ * A remembered answer is only useful if the reader can judge how old it is, so the
+ * time is shown next to it rather than hidden. Anything unparseable degrades to
+ * "时间未知" instead of "Invalid Date".
+ * @param iso - ISO timestamp from the host, or undefined.
+ * @returns a short local string.
+ */
+function formatWhen(iso) {
+	const at = typeof iso === "string" ? new Date(iso) : void 0;
+	if (at === void 0 || Number.isNaN(at.getTime())) return "时间未知";
+	const minutes = Math.floor((Date.now() - at.getTime()) / 60000);
+	if (minutes < 1) return "刚刚";
+	if (minutes < 60) return `${minutes} 分钟前`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours} 小时前`;
+	return at.toLocaleString();
+}
+
+/**
+ * The tools heading's state word.
+ *
+ * Kept as a function rather than a nested ternary in the tree: five states nested
+ * four deep is where the wrong branch gets picked, and this one decides whether the
+ * reader is looking at now or at the past.
+ * @param tools - the payload's tools block, or undefined.
+ * @param failed - whether the tools read reported an error.
+ * @returns the note text, or an empty string when it must be omitted.
+ */
+function toolsNote(tools, failed) {
+	if (failed) return "读取失败";
+	if (tools === void 0) return "";
+	if (tools.stale === true) return `上次活跃时 · ${formatWhen(tools.recordedAt)}`;
+	if (tools.scope === "agent") return "注册表 · 本会话 agent 视图";
+	return "无活跃 agent · 部署注册表";
+}
+
+const MUTED = { fontSize: 11, opacity: 0.55 };
 
 		/** The skill count: tabular figures so the width does not jitter per value. */
 		const COUNT = { fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums", minWidth: 10 };
@@ -524,7 +545,8 @@ window.__ModuleLoader__.load({
 				const nextTools = after[index].tools ?? [];
 				if (prevTools.length !== nextTools.length) return false;
 				for (let t = 0; t < prevTools.length; t += 1) {
-					if (prevTools[t] !== nextTools[t]) return false;
+					if (prevTools[t]?.name !== nextTools[t]?.name) return false;
+					if (prevTools[t]?.description !== nextTools[t]?.description) return false;
 				}
 			}
 			// Loader rows: enablement and phase are what the panel prints.
@@ -669,7 +691,7 @@ window.__ModuleLoader__.load({
 		async function readTools(connection, sessionId) {
 			if (connection === void 0) return { error: "connection 服务未挂载" };
 			try {
-				// The same channel/endpoint pair `EVENTS_PATH` is built from.
+				// The same channel/endpoint pair `TOOL_ENDPOINT` names.
 				// `rpc.call` composes `${channel}/${endpoint}` and slices the leading
 				// slash, so `API_CHANNEL` must keep it: "api" alone becomes "pi/..."
 				// and misses the route entirely.
@@ -696,6 +718,12 @@ window.__ModuleLoader__.load({
 					// `agent` means restrictions applied; `global` means the host had no
 					// agent for this session and answered from the deployment catalog.
 					scope: value?.scope === "agent" ? "agent" : "global",
+					// The host remembers the last answer a live agent gave for this session.
+					// When it answers from that memory instead of a live agent, the numbers
+					// are this session's own but no longer current — so they carry the time
+					// they were read and must be presented as a past reading, not as now.
+					stale: value?.stale === true,
+					recordedAt: typeof value?.recordedAt === "string" ? value.recordedAt : void 0,
 				};
 			} catch (error) {
 				return { error: describeError(error) };
@@ -893,15 +921,6 @@ window.__ModuleLoader__.load({
 			// re-nag on every frame.
 			const [alertOpen, setAlertOpen] = React.useState(false);
 			const acknowledgedFault = React.useRef(void 0);
-			// Whether the change stream is currently believed dead.
-			//
-			// A dead stream is the one failure this row cannot otherwise show: every
-			// number would simply freeze at its last value, which reads exactly like
-			// "nothing changed" — the blind spot this plugin exists to remove, just
-			// moved into its own transport. Set on an `EventSource` error, cleared when
-			// the stream comes back, and rendered in both the collapsed row and the
-			// detail panel.
-			const [pushLost, setPushLost] = React.useState(false);
 			// The floating panel is placed from this row's live rect.
 			const anchorRef = React.useRef(null);
 
@@ -961,11 +980,15 @@ window.__ModuleLoader__.load({
 						// A silent re-read that returns exactly what is already on screen
 						// must not re-render: the same answer would otherwise rebuild the
 						// row, invalidate the memo, and repaint for nothing.
-						setState((prev) =>
-							options?.silent === true && samePayload(prev.payload, payload)
-								? prev
-								: { phase: "ready", payload },
-						);
+						setState((prev) => {
+							// An unchanged payload does not re-render — but a previous failure
+							// must still be cleared, or the error line outlives the failure it
+							// reported (a silent success would leave "读取失败" on screen).
+							if (options?.silent === true && prev.phase === "ready" && samePayload(prev.payload, payload)) {
+								return prev;
+							}
+							return { phase: "ready", payload };
+						});
 					} catch (error) {
 						if (id !== requestId.current) return;
 						// A thrown load must be visible: the strip exists to remove blind
@@ -984,79 +1007,18 @@ window.__ModuleLoader__.load({
 				[sessionId],
 			);
 
-			// The stream's frame handler outlives any single `run` closure (a new
-			// Session mints a new one), so it reads the current one from a ref instead
-			// of forcing the stream to be torn down and reopened on every switch.
-			const runRef = React.useRef(run);
-			React.useEffect(() => {
-				runRef.current = run;
-			}, [run]);
-
-			// First read, once per Session.
+			// No change stream. This row used to hold an SSE connection per tab and
+			// re-read on every frame. It does not any more, by decision: the strip is a
+			// read-on-demand view now — it reads when it mounts, when the session
+			// changes, when the panel opens, and when the reader presses refresh.
+			// Nothing is pushed, no timer runs, and no connection is held open per tab.
+			//
+			// First read, once per Session. This is the whole "live" story now: the
+			// numbers are a reading, not a subscription, so they can lag until the reader
+			// asks again (opening the panel or pressing refresh does exactly that).
 			React.useEffect(() => {
 				void run();
 			}, [run, sessionId]);
-
-			// Live, without a timer: the host half holds a change stream open and writes
-			// a frame whenever the tool registry moves, so an MCP server dropping or a
-			// new tool appearing reaches this row at the moment it happens. There is no
-			// interval anywhere — an idle tab with nothing changing costs one open
-			// connection and zero requests.
-			//
-			// DSH's own `ctx.remote.$on` cannot carry this: the forwarded-event
-			// allowlist is a closed array inside `dsh-api-remotes` (no `tools/change`),
-			// and `typertGateway.registerRemoteEvents` is a single-application slot
-			// that bundle already owns. So the signal travels on this package's own
-			// route instead — the same owner-only carrier the answer route uses.
-			React.useEffect(() => {
-				if (sessionId === void 0) return void 0;
-				let source;
-				// One compensating read per outage. `EventSource` retries a transient
-				// drop on its own schedule, so without this flag every retry would also
-				// cost a read; with it, an outage costs exactly one.
-				let compensated = false;
-				/** The stream is (believed) alive again: re-arm the one-shot read. */
-				const live = () => {
-					compensated = false;
-					setPushLost(false);
-				};
-				const connect = () => {
-					source = new EventSource(EVENTS_PATH);
-					source.addEventListener("open", live);
-					source.addEventListener("message", () => {
-						live();
-						// A hidden tab has no reader: skip the read and let the visibility
-						// handler below pick it up when the reader comes back.
-						if (document.visibilityState === "visible") void runRef.current({ silent: true });
-					});
-					source.addEventListener("error", () => {
-						// Either the browser is about to retry (a transient drop) or it has
-						// given up for good (a fatal status, which `EventSource` never
-						// retries). Both mean this row is no longer being pushed, so say so
-						// — and re-read once, because that read is also the evidence that
-						// the transport died rather than the registry.
-						setPushLost(true);
-						if (compensated) return;
-						compensated = true;
-						if (document.visibilityState === "visible") void runRef.current({ silent: true });
-					});
-				};
-				connect();
-				// Returning to the tab reads immediately, and — since a fatal stream
-				// failure makes `EventSource` stop retrying altogether — also reopens a
-				// stream that is closed. Neither needs a timer: the reader coming back is
-				// the event.
-				const onVisible = () => {
-					if (document.visibilityState !== "visible") return;
-					if (source.readyState === EventSource.CLOSED) connect();
-					void runRef.current({ silent: true });
-				};
-				document.addEventListener("visibilitychange", onVisible);
-				return () => {
-					source.close();
-					document.removeEventListener("visibilitychange", onVisible);
-				};
-			}, [sessionId]);
 
 			const payload = state.payload;
 			const skillCount = payload?.skills?.entries?.length;
@@ -1081,6 +1043,20 @@ window.__ModuleLoader__.load({
 				0,
 			);
 
+			// Whether these numbers describe THIS session right now.
+			//
+			// A `global` answer is the deployment catalog and a `stale` one is this
+			// session's own numbers from an earlier moment. Neither may be rendered as
+			// current connectivity, and neither may raise a fault dialog: presenting them as
+			// "the MCP situation now" is the substitution this plugin refuses to make for the
+			// tools mark, and the MCP mark has to hold the same line.
+			const toolsState = payload?.tools;
+			const toolsCurrent =
+				toolsState !== void 0 &&
+				toolsState.error === void 0 &&
+				toolsState.scope === "agent" &&
+				toolsState.stale !== true;
+
 			// A fault, not merely an absence: MCP was CONFIGURED AND ENABLED, and yet
 			// nothing registered a tool. That is the case worth interrupting the reader
 			// for — it means servers that should work are not working, and the failure
@@ -1102,6 +1078,10 @@ window.__ModuleLoader__.load({
 			const mcpFault =
 				payload !== void 0 &&
 				payload.tools?.error === void 0 &&
+				// Only a current agent-scoped answer may accuse. A deployment-catalog answer
+				// describes a different thing, and a remembered one describes an earlier moment —
+				// neither is evidence about this session's MCP wiring now.
+				toolsCurrent &&
 				enabledMcpRows.length > 0 &&
 				!stillConnecting &&
 				connectedServers.length === 0;
@@ -1144,11 +1124,17 @@ window.__ModuleLoader__.load({
 					? "读取中"
 					: payload.tools?.error !== void 0
 						? "工具清单读取失败"
-						: connected
-							? `${totalMcpTools} 个工具`
-							: mcpFault
-								? "连接故障"
-								: "未连接";
+						: payload.tools?.stale === true
+							? `上次活跃时：${totalMcpTools} 个工具（非当前连接状态）`
+							: payload.tools?.scope !== "agent"
+								? `部署级注册表：${totalMcpTools} 个工具（非本会话视图）`
+								: connected
+									? `${totalMcpTools} 个工具`
+									: mcpFault
+										? "连接故障"
+										: enabledMcpRows.length > 0
+											? "本会话视图里没有 MCP 工具（可能未连接，也可能被本会话的工具限制挡住）"
+											: "未连接";
 
 			const renderSkillChip = () => {
 				const skills = payload?.skills;
@@ -1180,6 +1166,14 @@ window.__ModuleLoader__.load({
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
 					});
+				// Amber question mark: this answer is not the session's current state
+				// (deployment catalog, or a remembered reading). Printing the count in
+				// green here is what made a deployment number look like this session's.
+				else if (!toolsCurrent)
+					body = h(ui.IconUnknownOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-warn-primary)" },
+					});
 				else if (connected)
 					body = h(
 						"span",
@@ -1192,6 +1186,14 @@ window.__ModuleLoader__.load({
 					body = h(ui.IconWarningOutlineRegular, {
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
+				// Configured rows that registered nothing: still connecting, or masked out
+				// of this session's view by `tools.restrict()`. The strip cannot tell which,
+				// so it shows "unknown" rather than accusing the deployment of being down.
+				else if (enabledMcpRows.length > 0)
+					body = h(ui.IconUnknownOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-warn-primary)" },
 					});
 				else
 					body = h(ui.IconCloseOutlineRegular, {
@@ -1259,7 +1261,9 @@ window.__ModuleLoader__.load({
 							? "unreadable"
 							: tools.scope !== "agent"
 								? "no-agent"
-								: "ready";
+								: tools.stale === true
+									? "stale"
+									: "ready";
 				const stateBody = {
 					pending: () => h("span", MUTED, "…"),
 					unreadable: () =>
@@ -1274,12 +1278,21 @@ window.__ModuleLoader__.load({
 							size: 12,
 							style: { color: "var(--dsw-alias-state-warn-primary)" },
 						}),
+					// A remembered answer is this session's own number from when its agent was
+					// alive. Muted, so it never looks like a live reading.
+					stale: () =>
+						h(
+							"span",
+							{ ...COUNT, opacity: 0.6 },
+							String(tools?.totalTools ?? 0),
+						),
 					ready: () => h("span", COUNT, String(tools?.totalTools ?? 0)),
 				}[state];
 				const stateTitle = {
 					pending: "工具清单读取中",
 					unreadable: "工具清单读取失败",
 					"no-agent": "该会话暂无活跃 agent，读不到它自己的工具视图（在会话里发一条消息后即可读取）",
+					stale: `上次活跃时（${formatWhen(tools?.recordedAt)}）的工具总数：${tools?.totalTools ?? 0}；当前无活跃 agent`,
 					ready: `本会话 agent 被提供的工具总数（含 MCP）：${tools?.totalTools ?? 0}`,
 				}[state];
 				return h(
@@ -1312,6 +1325,11 @@ window.__ModuleLoader__.load({
 							// The one case that must never read as "your session's tools": a global
 							// answer is the deployment catalog, because this session has no agent to
 							// answer for it. Say why, and say what makes it available.
+							...(tools !== void 0 && tools.stale === true
+								? [
+										`该会话当前没有活跃 agent。下面是它上次活跃时（${formatWhen(tools.recordedAt)}）读到的工具清单，不是现在的部署注册表。在会话里发一条消息后点刷新即可读到当前值。`,
+									]
+								: []),
 							...(tools !== void 0 && tools.scope !== "agent"
 								? [
 										"该会话当前没有活跃 agent（重启后尚未在本进程运行过，或它已被释放），因此读不到它自己的工具视图。下面是部署级注册表，不是本会话的数字；在会话里发一条消息后点刷新即可读到。",
@@ -1365,11 +1383,7 @@ window.__ModuleLoader__.load({
 						// The scope, stated rather than implied. It says "视图", not "可见":
 						// this reads the REGISTRY, so a plugin that filters tools out of the
 						// LLM request afterwards is not reflected here.
-						note: failed
-							? "读取失败"
-							: tools?.scope === "agent"
-								? "注册表 · 本会话 agent 视图"
-								: "无活跃 agent · 部署注册表",
+						note: toolsNote(tools, failed),
 					}),
 					meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
 					body,
@@ -1424,22 +1438,6 @@ window.__ModuleLoader__.load({
 						// where "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
 						note: mcpStateLabel,
 					}),
-					// A dead change stream is stated before the numbers it affects, not
-					// after: the reader is about to trust them.
-					pushLost
-						? h(
-								"div",
-								{
-									style: {
-										fontSize: 11.5,
-										lineHeight: 1.5,
-										padding: "4px 0",
-										color: "var(--dsw-alias-state-warn-primary)",
-									},
-								},
-								"变更推送已断开：下面这些数字不会再自动更新。点右上角刷新重读，切回标签页也会重读。",
-							)
-						: null,
 					// The connected list is the answer to "does it actually work":
 					// these servers have tools registered in the live registry.
 					tools.error !== void 0
@@ -1515,8 +1513,8 @@ window.__ModuleLoader__.load({
 					h(
 						"div",
 						{ style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5, paddingTop: 5 } },
-						"判据是工具注册表里存在 mcp__<server>__* 工具；工具注册表一变，这里就立刻跟着变（宿主主动推送，不定时轮询）。",
-						"连不上、或连上但没暴露工具的服务器，都算未连接——两种情况下它的工具都用不了。",
+						"判据是工具注册表里存在 mcp__<server>__* 工具；注册表变化**不会**自动推送过来，这里只在你打开明细或点刷新时重读。",
+						"连不上、或连上但被本会话的工具限制挡住，都会让这个视图里没有它的工具——所以「本会话视图里没有」不等于「服务器没连上」。",
 					),
 				);
 			})();
@@ -1637,24 +1635,6 @@ window.__ModuleLoader__.load({
 					renderMcpChip(),
 					h("span", { style: { height: 10, display: "flex" } }, h(Divider, { vertical: true })),
 					renderToolsChip(),
-					// Only present while the stream is dead, so the healthy row keeps the
-					// width it was measured at: zero cost when nothing is wrong, and an
-					// 11 px mark instead of a silent freeze when something is.
-					pushLost
-						? h(
-								"span",
-								{
-									title: "变更推送已断开：数字不会自动更新，点开明细查看",
-									"aria-label": "变更推送已断开",
-									style: {
-										display: "flex",
-										alignItems: "center",
-										color: "var(--dsw-alias-state-warn-primary)",
-									},
-								},
-								h(ui.IconWarningOutlineRegular, { size: 11 }),
-							)
-						: null,
 				),
 				state.phase === "failed"
 					? h(

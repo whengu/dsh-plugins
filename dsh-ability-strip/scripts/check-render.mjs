@@ -218,12 +218,6 @@ async function unmount() {
 /** Let a microtask-queued read enter the stub's `load`. */
 const flush = () => new Promise((r) => setImmediate(r));
 
-/** Fire `visibilitychange` on the listeners the current mount registered. */
-const fireVisibility = () => {
-  for (const entry of [...documentListeners]) {
-    if (entry.type === "visibilitychange") entry.listener();
-  }
-};
 
 /** Collect every string/number leaf in a built tree, expanding function components. */
 function textOf(node) {
@@ -444,11 +438,17 @@ const payloadDisconnected = {
       { name: "read", description: "Read a file" },
       { name: "read_img", description: "Describe an image with the vision model" },
     ],
-    scope: "global",
+    // A fault claim requires a CURRENT agent-scope answer: this fixture is the
+    // session's own view — its agent is live and simply registered no MCP tools.
+    scope: "agent",
   },
 };
 const okProps = { sessionId: "s1", load: async () => payloadOk };
 const disconnectedProps = { sessionId: "s1", load: async () => payloadDisconnected };
+// The deployment catalog: same emptiness, but it is NOT this session's view, so it
+// must never be rendered as current connectivity and must never raise a fault.
+const payloadGlobal = { ...payloadOk, tools: { ...payloadDisconnected.tools, scope: "global" } };
+const globalProps = { sessionId: "s1g", load: async () => payloadGlobal };
 
 // --- Case 1: first paint, nothing read yet --------------------------------
 let tree = mount(okProps);
@@ -687,7 +687,14 @@ render(emptyProps);
 await settle();
 render(emptyProps);
 text = textOf(render(emptyProps));
-check(mcpStateOf(render(emptyProps)).includes("未连接"), "an empty successful read must read 未连接");
+check(
+	mcpStateOf(render(emptyProps)).includes("部署级注册表"),
+	"a deployment-scope empty read must say which view it is, not claim this session is disconnected",
+);
+check(
+	!mcpStateOf(render(emptyProps)).includes("未连接"),
+	"a deployment-scope read must not claim 未连接 about the session",
+);
 check(findDialog(render(emptyProps)) === undefined, "no MCP configured must NOT open the fault dialog");
 check(!text.includes("连接故障"), "no MCP configured must NOT read 连接故障");
 
@@ -710,7 +717,10 @@ await settle();
 render(disabledProps);
 text = textOf(render(disabledProps));
 check(findDialog(render(disabledProps)) === undefined, "a disabled MCP row must NOT open the fault dialog");
-check(mcpStateOf(render(disabledProps)).includes("未连接"), "a disabled MCP row reads 未连接, not a fault");
+check(
+	!mcpStateOf(render(disabledProps)).includes("连接故障"),
+	"a disabled MCP row must not be a fault",
+);
 
 // --- Case 5a2: registry read failed, rows enabled ------------------------
 // The strip cannot tell whether this is a fault, so it must not accuse.
@@ -772,230 +782,71 @@ log("case6 (throw)", render(throwProps));
 check(text.some((t) => t.includes("读取失败：network down")), "a thrown load must be shown");
 check(text.includes("…"), "a thrown load leaves the counts unknown, not zero");
 
-// --- Case 7: no timer, one change stream ----------------------------------
-// This is the mechanism upgrade, stated as a check: the strip used to re-read the
-// Host on a permanent page-side interval every 15 s whether or not anything had
-// changed. There must now be no interval at all — in any state — and one open
-// change stream instead.
-let loadCount = 0;
-const countingProps = {
-  sessionId: "s7",
-  load: async () => {
-    loadCount += 1;
-    return payloadOk;
-  },
-};
-const sourcesBefore = sources.length;
-mount(countingProps);
-await settle();
-check(timers.length === 0, `the strip must not register an interval, saw ${timers.length}`);
-check(sources.length === sourcesBefore + 1, "the strip must open exactly one change stream");
-const stream = sources[sources.length - 1];
-// Document-relative (no leading slash: routes resolve below the app's base path),
-// and written out rather than derived — the host half pins the same literal, so a
-// rename on either side fails a check instead of silently never connecting.
-const EVENTS_WIRE_PATH = "api/ability-strip/events";
-check(
-  stream.url === EVENTS_WIRE_PATH,
-  `the stream must open the host half's own route, saw ${stream.url}`,
-);
-check(stream.closed === false, "the stream must stay open while the strip is mounted");
-check(loadCount === 1, `mounting must read once, saw ${loadCount}`);
-
-// --- Case 7a: a hidden tab must not spend a read on a frame ---------------
-let beforeHidden = loadCount;
-globalThis.document.visibilityState = "hidden";
-stream.emit("message", '{"version":2}');
-await flush();
-check(loadCount === beforeHidden, "a hidden tab must not spend a read on a frame");
-// Coming back must pick up what was dropped while hidden.
-globalThis.document.visibilityState = "visible";
-fireVisibility();
-await flush();
-check(loadCount > beforeHidden, "returning to the tab must read what a hidden tab skipped");
-// A visible tab re-reads on the frame that reports a change.
-beforeHidden = loadCount;
-stream.emit("message", '{"version":3}');
-await flush();
-check(loadCount > beforeHidden, "a visible tab must re-read when the registry changes");
-
-// --- Case 7b: a dead stream is stated, and costs exactly one read ---------
-// An `EventSource` that fails can stop for good (a fatal status is never retried),
-// and then nothing would ever push again: the row would freeze at its last numbers
-// and read exactly like "nothing changed" — the blind spot this plugin exists to
-// remove, moved into its own transport. So an error must re-read once, be visible,
-// and must not turn every retry into another read.
-let errReads = 0;
-const errProps = {
-  sessionId: "s7b",
-  load: async () => {
-    errReads += 1;
-    return payloadOk;
-  },
-};
-mount(errProps);
-await settle();
-const errStream = sources[sources.length - 1];
-check(sources.length > 0, "case 7b must open a stream");
-check(
-  findByLabel(render(errProps), "变更推送已断开") === undefined,
-  "a live stream must not claim the push is down",
-);
-const readsBeforeError = errReads;
-// A transient drop: `EventSource` will retry on its own (readyState stays CONNECTING).
-errStream.readyState = FakeEventSource.CONNECTING;
-errStream.emit("error");
-await flush();
-check(
-  errReads === readsBeforeError + 1,
-  `the first error must re-read exactly once, saw ${errReads} (before ${readsBeforeError})`,
-);
-check(
-  findByLabel(render(errProps), "变更推送已断开") !== undefined,
-  "an error must be visible on the collapsed row",
-);
-// A retry that fails again must NOT read again: one outage, one read.
-errStream.emit("error");
-await flush();
-check(errReads === readsBeforeError + 1, `a repeated error must not re-read, saw ${errReads}`);
-// The detail panel states it in words, not just as an 11 px mark.
-const expand7b = findButton(render(errProps), "明细");
-if (expand7b) expand7b.props.onClick();
-await flush();
-check(
-  has(textOf(render(errProps)), "变更推送已断开：下面这些数字不会再自动更新"),
-  "the detail panel must state that the pushed numbers stopped updating",
-);
-// Coming back re-arms the one-shot read and clears the mark.
-errStream.emit("open");
-await flush();
-check(
-  findByLabel(render(errProps), "变更推送已断开") === undefined,
-  "a reopened stream must clear the mark",
-);
-const readsBeforeSecondOutage = errReads;
-errStream.readyState = FakeEventSource.CLOSED;
-errStream.emit("error");
-await flush();
-check(
-  errReads === readsBeforeSecondOutage + 1,
-  `a second outage must re-read again, saw ${errReads} (before ${readsBeforeSecondOutage})`,
-);
-
-// --- Case 7c: coming back revives a stream that stopped for good ----------
-// Without this the row would stay stale until a page reload, and doing it with a
-// timer would reintroduce exactly what this design removed. Every other stub
-// source in this file is still CONNECTING or OPEN, so the closed one is the only
-// one that reopens and the count is exact.
-const reopenBefore = sources.length;
-globalThis.document.visibilityState = "visible";
-errStream.readyState = FakeEventSource.CLOSED;
-fireVisibility();
-await flush();
-check(
-  sources.length === reopenBefore + 1,
-  `a closed stream must be reopened when the reader comes back, saw ${sources.length} (before ${reopenBefore})`,
-);
-check(
-  sources[sources.length - 1].url === EVENTS_WIRE_PATH,
-  "a reopened stream must use the same route",
-);
-// Coming back with the stream still open must NOT open a second one: that would
-// leak a connection per tab switch.
-const noDuplicateBefore = sources.length;
-const liveAgain = sources[sources.length - 1];
-liveAgain.emit("open");
-fireVisibility();
-await flush();
-check(
-  sources.length === noDuplicateBefore,
-  `coming back with a live stream must not open another, saw ${sources.length} (before ${noDuplicateBefore})`,
-);
-
-// --- Case 8: an unchanged frame must not re-render ------------------------
-// The same answer arriving again must not reach setState with a NEW object: that
-// would rebuild the row and repaint for nothing. A change stream can deliver
-// several frames for one visible change, so this suppression is what keeps a burst
-// from becoming a burst of repaints. The stub's setState does not re-render, so
-// what is counted is the state object identity — a fresh object is exactly the
-// re-render React would schedule.
-const stablePayload = { ...payloadOk };
-const stableProps = { sessionId: "s8", load: async () => stablePayload };
-mount(stableProps);
-await settle();
-const stateSlot8 = hookState[1];
-check(stateSlot8?.phase === "ready", "case 8 must have read once before the frame");
-const payloadBefore = stateSlot8.payload;
-sources[sources.length - 1].emit("message", '{"version":4}');
-await flush();
-const stateAfterIdenticalFrame = hookState[1];
-check(
-  stateAfterIdenticalFrame === stateSlot8,
-  "a frame carrying an unchanged answer must keep the same state object (no re-render)",
-);
-check(
-  stateAfterIdenticalFrame.payload === payloadBefore,
-  "a frame carrying an unchanged answer must keep the same payload reference",
-);
-
-// A changed answer MUST produce a new state: suppression must not swallow news.
-let flipped = false;
-const changingProps = {
-  sessionId: "s9",
-  load: async () => (flipped ? { ...payloadOk, tools: { servers: [], totalTools: 0 } } : { ...payloadOk }),
-};
-mount(changingProps);
-await settle();
-const stateSlot9 = hookState[1];
-flipped = true;
-sources[sources.length - 1].emit("message", '{"version":5}');
-await flush();
-check(hookState[1] !== stateSlot9, "a frame carrying a changed answer must produce new state (re-render)");
-check(
-  (hookState[1].payload?.tools?.servers ?? []).length === 0,
-  "a changed frame must show the new answer",
-);
+// --- Case 7: no timer, no stream, one read on mount ----------------------
+// The strip reads on demand now: mounting reads once, and nothing is pushed.
+// `timers` is the harness's fake `setInterval` (a self-refresh timer would land
+// there) and `sources` its fake `EventSource` (a change stream would land there).
+{
+	const sourcesBefore = sources.length;
+	let loads = 0;
+	const countingProps = {
+		sessionId: "s-count",
+		load: async () => {
+			loads += 1;
+			return payloadOk;
+		},
+	};
+	mount(countingProps);
+	await settle();
+	check(timers.length === 0, `the strip must not register an interval, saw ${timers.length}`);
+	check(
+		sources.length === sourcesBefore,
+		`the strip must not open a change stream any more, saw ${sources.length - sourcesBefore}`,
+	);
+	check(loads === 1, `mounting must read exactly once, saw ${loads}`);
+	await unmount();
+}
 
 // --- Case 10: a slow read must not stack requests -------------------------
-// Without the in-flight guard, a frame arriving while a read is still pending would
-// ask the Host again, piling up work against a Host that is already struggling.
+// Now that reads are triggered by the reader (panel open, refresh) rather than by
+// a pushed frame, the case that matters is a second trigger while the first read is
+// still pending: the strip must not ask the Host again, and the trigger must collapse
+// into exactly one follow-up read once the pending one settles.
 let slowCalls = 0;
 let release;
 const gate = new Promise((resolve) => {
-  release = resolve;
+	release = resolve;
 });
 const slowProps = {
-  sessionId: "s10",
-  load: async () => {
-    slowCalls += 1;
-    await gate;
-    return payloadOk;
-  },
+	sessionId: "s10",
+	load: async () => {
+		slowCalls += 1;
+		await gate;
+		return payloadOk;
+	},
 };
 mount(slowProps);
-// Flush the effects so the stream is open and the mount read is STARTED. The read
-// itself stays pending on the gate, which is the state under test.
+// Flush the effects so the mount read is STARTED; it stays pending on the gate.
 for (const fn of [...effects]) await fn();
 await flush();
-const callsBeforeFrames = slowCalls;
-check(callsBeforeFrames >= 1, "the mount read must have started");
-// Three frames while the first read is still pending.
-const stream10 = sources[sources.length - 1];
-stream10.emit("message", '{"version":6}');
-stream10.emit("message", '{"version":7}');
-stream10.emit("message", '{"version":8}');
+const callsBeforeOpen = slowCalls;
+check(callsBeforeOpen >= 1, "the mount read must have started");
+// Opening the panel is a second trigger while the first read is still pending.
+const row10 = findByLabel(render(slowProps), "展开明细");
+row10?.props?.onClick?.();
 await flush();
 check(
-  slowCalls === callsBeforeFrames,
-  `frames during an in-flight read must not start another (saw ${slowCalls}, before ${callsBeforeFrames})`,
+	slowCalls === callsBeforeOpen,
+	`a trigger during an in-flight read must not start another (saw ${slowCalls}, before ${callsBeforeOpen})`,
 );
-// Releasing the gate lets the pending read finish; the dropped frames collapse into
-// ONE compensating read, not one per frame.
+// Releasing the gate lets the pending read finish; the extra trigger collapses into
+// ONE follow-up read rather than one per trigger.
 release();
 await flush();
+await flush();
 check(
-  slowCalls === callsBeforeFrames + 1,
-  `a burst of frames during a read must collapse into one compensating read, saw ${slowCalls} (before ${callsBeforeFrames})`,
+	slowCalls === callsBeforeOpen + 1,
+	`triggers during a read must collapse into one follow-up read, saw ${slowCalls} (before ${callsBeforeOpen})`,
 );
 
 // --- Case 11: opening the panel reads -------------------------------------
@@ -1023,20 +874,6 @@ const collapseCase11 = findButton(render(openProps), "明细");
 if (collapseCase11) collapseCase11.props.onClick();
 await flush();
 check(openCount === reopenCount, "closing the panel must not read");
-
-// --- Case 12: unmounting closes the stream --------------------------------
-// A closed row must not leave an open HTTP response (and its subscriber) behind.
-mount(okProps);
-await settle();
-const stream12 = sources[sources.length - 1];
-const visibilityBefore = documentListeners.filter((e) => e.type === "visibilitychange").length;
-check(stream12.closed === false, "case 12 must open a stream before unmounting");
-await unmount();
-check(stream12.closed === true, "unmounting must close the change stream");
-check(
-  documentListeners.filter((e) => e.type === "visibilitychange").length < visibilityBefore,
-  "unmounting must drop the visibility listener",
-);
 
 // --- The mechanism, stated once more over every case above ----------------
 // Any of the mounts above reintroducing a self-refresh timer fails here, whatever
@@ -1119,9 +956,9 @@ const chipGlyph = (tree) => {
 // catalog; printing that count where the session's count belongs is precisely the
 // misreport the reader hit, so the collapsed chip must show no number at all.
 {
-	mount(disconnectedProps);
+	mount(globalProps);
 	await settle();
-	const globalTree = render(disconnectedProps);
+	const globalTree = render(globalProps);
 	const toolsChip = findByLabel(globalTree, "工具");
 	const chipText = textOf(toolsChip ?? []);
 	check(
@@ -1135,7 +972,7 @@ const chipGlyph = (tree) => {
 	const openGlobal = findButton(globalTree, "明细");
 	if (openGlobal) openGlobal.props.onClick();
 	await flush();
-	const globalText = textOf(render(disconnectedProps));
+	const globalText = textOf(render(globalProps));
 	check(has(globalText, "没有活跃 agent"), "the panel must explain the missing agent");
 	check(has(globalText, "部署级注册表"), "the panel must label the fallback for what it is");
 	check(
@@ -1144,6 +981,49 @@ const chipGlyph = (tree) => {
 	);
 }
 
+
+// --- A remembered reading is shown as a reading, with its time -------------
+// The host remembers the last answer a live agent gave for a session, so a session
+// whose agent has been released still shows its own numbers instead of the
+// deployment catalog. Those numbers are no longer current, so the chip keeps them
+// muted and the tooltip and the panel both say when they were taken.
+const recordedAt = new Date(Date.now() - 42 * 60000).toISOString();
+const staleProps = {
+	sessionId: "s-stale",
+	load: async () => ({
+		...payloadOk,
+		tools: { ...payloadOk.tools, scope: "agent", stale: true, recordedAt },
+	}),
+};
+{
+	mount(staleProps);
+	await settle();
+	const staleTree = render(staleProps);
+	const staleChip = findByLabel(staleTree, "工具");
+	const staleText = textOf(staleChip ?? []).join("");
+	check(staleText === "5", `a remembered reading must still show its number, saw ${JSON.stringify(staleText)}`);
+	check(
+		(markTitle(staleTree, "工具") ?? "").includes("上次活跃时"),
+		"the tooltip must say the number is a past reading, not a current one",
+	);
+	check(
+		(markTitle(staleTree, "工具") ?? "").includes("42 分钟前"),
+		`the tooltip must say how old it is, saw ${JSON.stringify(markTitle(staleTree, "工具"))}`,
+	);
+	check(
+		!(markTitle(staleTree, "工具") ?? "").includes("暂无活跃 agent"),
+		"a remembered reading must not be reported as having no data at all",
+	);
+	const openStale = findButton(staleTree, "明细");
+	if (openStale) openStale.props.onClick();
+	await flush();
+	const stalePanel = textOf(render(staleProps));
+	check(has(stalePanel, "上次活跃时"), "the panel heading must date the reading");
+	check(
+		has(stalePanel, "不是现在的部署注册表"),
+		"the panel must say what the remembered list is NOT, so it is never mistaken for the catalog",
+	);
+}
 
 // --- Every chip state answers only for what it knows ----------------------
 // "pending", "unreadable" and "no active agent" are different facts. Folding any of
@@ -1178,6 +1058,46 @@ const chipState = (props) => ({
 	const ready = chipState(okProps);
 	check(ready.digits === "5", `a ready chip must print the total, saw ${JSON.stringify(ready.digits)}`);
 	check(ready.title.includes("本会话 agent"), "a ready chip must say whose number it is");
+}
+
+// --- MCP must hold the same line as the tools mark ------------------------
+// The tools mark refuses to present a deployment or remembered number as current.
+// The MCP mark reads the same payload, so it must obey the same rule: a non-current
+// answer may not print a green count (that is what made a deployment number look
+// like this session's connection state) and may not raise a fault.
+const chipTitleOf = (props) => markTitle(render(props), "MCP") ?? "";
+const chipTextOf = (props) => textOf(findByLabel(render(props), "MCP") ?? []).join("");
+{
+	// A deployment-catalog answer that DOES carry MCP tools.
+	const globalWithServers = { ...payloadOk, tools: { ...payloadOk.tools, scope: "global" } };
+	const globalMcpProps = { sessionId: "s-gmcp", load: async () => globalWithServers };
+	mount(globalMcpProps);
+	await settle();
+	check(
+		!/\d/.test(chipTextOf(globalMcpProps)),
+		`a deployment-scope MCP answer must not print a count as this session's, saw ${JSON.stringify(chipTextOf(globalMcpProps))}`,
+	);
+	check(
+		chipTitleOf(globalMcpProps).includes("部署级"),
+		"a deployment-scope MCP answer must say which view it is",
+	);
+
+	// A remembered answer with MCP tools: this session's own numbers, but from before.
+	const staleWithServers = {
+		...payloadOk,
+		tools: { ...payloadOk.tools, scope: "agent", stale: true, recordedAt },
+	};
+	const staleMcpProps = { sessionId: "s-smcp", load: async () => staleWithServers };
+	mount(staleMcpProps);
+	await settle();
+	check(
+		!/\d/.test(chipTextOf(staleMcpProps)),
+		"a remembered MCP answer must not print a live-looking count",
+	);
+	check(
+		chipTitleOf(staleMcpProps).includes("上次活跃时"),
+		"a remembered MCP answer must say it is a past reading",
+	);
 }
 
 console.log("---");

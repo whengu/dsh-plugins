@@ -3,12 +3,12 @@
  *
  * The browser can read the skill catalog and the Loader inventory on its own, but
  * it has **no** way to see the tool registry: which tools are actually registered,
- * and therefore whether each configured MCP server really connected. A server
- * that fails to connect registers no `mcp__<server>__*` tools, so the registry is
- * the only browser-visible evidence of a live MCP connection.
+ * and therefore whether each configured MCP server really connected. A server that
+ * fails to connect registers no `mcp__<server>__*` tools, so the registry is the
+ * only browser-visible evidence of a live MCP connection.
  *
- * This half answers one question and nothing else — *what does the tool registry
- * hold for this session* — and it answers it in three parts:
+ * This half answers one question and nothing else — *what does this session's model
+ * get offered* — in three parts:
  *
  *   - read `ctx.tools.schemas(agent)` for the session's agent, which is the same
  *     call the real executors make, so `restrict()` masks and scoped shadowing are
@@ -16,17 +16,33 @@
  *   - split that catalog into the MCP servers (names follow `mcp__<server>__<tool>`)
  *     and everything else, keeping each tool's own description so the panel can say
  *     what a tool is for;
- *   - serve the result on one exact, owner-only Connection route, plus one
- *     Server-Sent Events stream per browser tab that says "the registry moved" the
- *     moment it does, so the strip never has to run a timer.
+ *   - answer on one exact, owner-only Connection route.
  *
- * What it reports is the REGISTRY, not the request. A plugin may filter `tools` out
- * of the LLM request afterwards (`dsh-read-img` hides `read_image` that way), and
- * that filter is invisible here; the browser half states this in the panel rather
- * than pretending the two are the same thing.
+ * ## No change stream, by decision
  *
- * It is read-only: it registers no tool, mutates no registry, edits no config, and
- * holds no state between requests beyond a bounded catalog cache.
+ * This half used to hold one Server-Sent Events stream per browser tab and push a
+ * frame whenever the registry moved. It does not any more. The strip is a
+ * read-on-demand view now: it reads when it mounts, when the session changes, when
+ * the panel opens, and when the reader asks for a refresh. Nothing is pushed, no
+ * timer runs, and there is no open connection per tab.
+ *
+ * ## What survives without a live agent
+ *
+ * `agents.get(sessionId)` resolves only while that session's agent is alive in this
+ * Host process — the session controller resumes one on demand. When there is no
+ * agent, there is no current answer, and this half will not invent one from the
+ * deployment catalog.
+ *
+ * It CAN answer from memory: whenever a read is served by a live agent, the answer
+ * is remembered per session (bounded), so a session whose agent has since been
+ * released still shows the numbers it really had — marked `stale` with the time it
+ * was read. That memory lives and dies with this process. After a Host restart
+ * there is nothing to remember, and the browser is told exactly that.
+ *
+ * Deliberately NOT done: reading the persisted session log to recover a past
+ * declaration. Those logs are zstd-compressed and run to tens of megabytes, so
+ * folding one per panel open is not a cost this view may impose, and a read-only
+ * display plugin should not be writing sidecar files to reconstruct it either.
  *
  * @module dsh-ability-strip
  */
@@ -49,15 +65,6 @@ export const ROUTE_CHANNEL = "/api";
  * `<channel>/<endpoint>`, so this value and the client's must stay identical.
  */
 export const ROUTE_ENDPOINT = "ability-strip";
-
-/**
- * Endpoint carrying the registry **change** signal, as a Server-Sent Events
- * stream. A sub-path rather than a second method on {@link ROUTE_ENDPOINT}: the
- * answer route is request/response and POST-only (`rpc.call` has no other
- * verb), while this one is an open GET stream, and giving each its own path
- * keeps both contracts readable and independently testable.
- */
-export const ROUTE_EVENTS_ENDPOINT = "ability-strip/events";
 
 /** Prefix the MCP client puts on every tool it registers. */
 const MCP_TOOL_PREFIX = "mcp__";
@@ -86,6 +93,31 @@ export function splitMcpToolName(toolName) {
 	if (server.length === 0) return void 0;
 	const tool = toolName.slice(separator + 2);
 	return { server, tool };
+}
+
+/**
+ * Longest description carried to the browser, exclusive of the ellipsis.
+ *
+ * The catalog is the only place a tool's own words exist, and the panel shows them
+ * next to the name — that is the answer to "what is this tool actually for". The
+ * cap is a wire bound, not a judgement: a pathological description cannot turn one
+ * panel read into a megabyte. A cut description keeps `MAX_DESCRIPTION_CHARS`
+ * characters **plus** the `…` marker, so the marker is never what got trimmed off.
+ */
+export const MAX_DESCRIPTION_CHARS = 400;
+
+/**
+ * One tool as the panel needs it: name plus its own description.
+ * @param name - the tool name without any MCP server prefix.
+ * @param schema - the schema that carried it.
+ * @returns the entry, with the description trimmed and capped.
+ */
+function toolEntry(name, schema) {
+	const raw = typeof schema?.description === "string" ? schema.description.trim() : "";
+	return {
+		name,
+		description: raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw,
+	};
 }
 
 /**
@@ -119,31 +151,6 @@ export function summarizeMcpTools(schemas) {
 			tools: tools.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
 		}))
 		.sort((left, right) => (left.server < right.server ? -1 : left.server > right.server ? 1 : 0));
-}
-
-/**
- * Longest description carried to the browser, exclusive of the ellipsis.
- *
- * The catalog is the only place a tool's own words exist, and the panel shows them
- * next to the name — that is the answer to "what is this tool actually for". The
- * cap is a wire bound, not a judgement: a pathological description cannot turn one
- * panel read into a megabyte. A cut description keeps `MAX_DESCRIPTION_CHARS`
- * characters **plus** the `…` marker, so the marker is never what got trimmed off.
- */
-export const MAX_DESCRIPTION_CHARS = 400;
-
-/**
- * One tool as the panel needs it: name plus its own description.
- * @param name - the tool name without any MCP server prefix.
- * @param schema - the schema that carried it.
- * @returns the entry, with the description trimmed and capped.
- */
-function toolEntry(name, schema) {
-	const raw = typeof schema?.description === "string" ? schema.description.trim() : "";
-	return {
-		name,
-		description: raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw,
-	};
 }
 
 /**
@@ -237,123 +244,122 @@ export function readToolSummary(ctx, sessionId) {
 }
 
 /**
- * How many viewing scopes keep a cached answer.
- *
- * The cache is keyed by session id and dropped wholesale on `tools/change`, but a
- * host can outlive many sessions without any registry change, and each entry holds
- * a whole catalog including descriptions. Without a bound the map would grow with
- * the number of sessions ever opened; with it, the cost of eviction is one
- * `schemas()` read for a scope that comes back, and nothing becomes stale.
+ * How many viewing scopes keep a cached answer, and how many remember their last
+ * agent answer. Both are bounded so a long-lived Host serving many sessions cannot
+ * accumulate catalogs without limit.
  */
 export const MAX_CACHED_SCOPES = 8;
 
 /**
- * Wrap {@link readToolSummary} in a cache invalidated by the registry itself, and
- * hand out the same invalidation as a change signal.
+ * Wrap {@link readToolSummary} in a cache plus a per-session memory of the last
+ * answer a **live agent** produced.
  *
- * `ctx.tools.schemas()` deep-clones every visible tool, so calling it on each read
- * would copy the whole catalog. The Host already knows when the answer changes: it
- * emits `tools/change` on every registration, unregistration, and scoped
- * restriction. Hooking that event makes the cache exact — it is dropped precisely
- * when it could be stale, never on a timer.
+ * Two different maps, for two different jobs:
  *
- * The same single listener feeds {@link createToolSummaryReader}'s change version,
- * which is what the browser's event stream relays. One `tools/change` subscription
- * serves both purposes: an invalidation and a notification are the same fact.
+ *   - `cached` holds the current answer per scope and is dropped whenever the
+ *     registry moves (`tools/change`), because that is exactly when it can go
+ *     stale;
+ *   - `remembered` holds the last agent-scope answer per session and is NOT dropped
+ *     on registry change, because it is history, not a cache. It is what lets the
+ *     strip keep showing a session's real numbers after its agent was released.
+ *
  * @param ctx - Host context providing `tools`.
- * @returns the current summary reader, its change subscriptions, and its disposer.
+ * @returns the reader and its disposer.
  */
 export function createToolSummaryReader(ctx) {
-	/**
-	 * One cached answer per viewing scope, keyed by session id.
-	 *
-	 * The answer is scope-dependent: `schemas(agent)` applies that agent's
-	 * restrictions while the global view does not, so a single slot would serve one
-	 * tab's answer to another tab whose agent sees a different set. The empty string
-	 * keys the global view (a caller with no session id).
-	 * @type {Map<string, object>}
-	 */
+	/** @type {Map<string, object>} */
 	let cached = new Map();
-	/** Bumped once per `tools/change`; read by the event stream, never by a read. */
-	let version = 0;
-	/** Open change streams (one per browser tab) waiting for the next bump. */
-	const listeners = new Set();
+	/**
+	 * Last answer a live agent produced, per session id.
+	 *
+	 * Written only when `scope === "agent"`, so it can never hold a deployment-catalog
+	 * answer dressed up as a session answer. Survives `tools/change` on purpose.
+	 * @type {Map<string, { summary: object, at: string }>}
+	 */
+	let remembered = new Map();
+	/** Drop caches only: the registry moved, so current answers are stale. */
 	const invalidate = () => {
-		// Every cached scope goes together: `tools/change` fires on registration,
-		// unregistration, and scoped restriction alike, and this listener cannot
-		// tell which agent moved. Dropping the whole map is the cheap exact answer.
 		cached.clear();
-		version += 1;
-		// A copy, so a listener that detaches while being notified cannot disturb
-		// the set being walked.
-		for (const listener of [...listeners]) listener(version);
 	};
 	const off = ctx.on("tools/change", invalidate);
+	/** Bound a map by dropping the oldest inserted key. */
+	const bound = (map) => {
+		while (map.size > MAX_CACHED_SCOPES) {
+			const oldest = map.keys().next();
+			if (oldest.done === true) break;
+			map.delete(oldest.value);
+		}
+	};
 	return {
+		/**
+		 * Answer for one viewing scope.
+		 *
+		 * Order of preference: the cached answer for this session, then a fresh read
+		 * (which remembers itself when a live agent served it), then the remembered
+		 * answer marked `stale`, then the deployment catalog marked `global`.
+		 * @param sessionId - the session whose agent should answer, if any.
+		 * @returns the summary the browser renders.
+		 */
 		read(sessionId) {
-			// Cache only successful reads. A transient failure (registry not yet
-			// ready, a momentary error) must not stick: the next read should retry,
-			// not keep serving the stale error until the next `tools/change`.
 			const key = typeof sessionId === "string" ? sessionId : "";
+			// Liveness is part of the answer, not just a hint: "this is what your session
+			// has now" is false the moment its agent is released, and equally false the
+			// other way round. A session whose first read happened while it had no agent
+			// caches a `global` answer; when the agent is later resumed there is no
+			// `tools/change` to clear it (the registry itself did not move), so a cached
+			// `global` answer would be served forever and the strip would be stuck at
+			// "no active agent" even after the session came alive. A hit is therefore only
+			// reusable when its scope still matches reality; the check is one map lookup
+			// and no registry clone.
+			const alive = resolveAgent(ctx, sessionId) !== void 0;
 			const hit = cached.get(key);
-			if (hit !== void 0) return hit;
+			if (hit !== void 0 && (hit.scope === "agent") === alive) {
+				// Refresh insertion order so eviction is least-recently-USED, not
+				// first-come: a session the reader keeps opening must not be the one
+				// dropped for an older one they never revisited.
+				cached.delete(key);
+				cached.set(key, hit);
+				return hit;
+			}
 			const result = readToolSummary(ctx, sessionId);
-			if (result.ok) {
-				cached.set(key, result);
-				// Bound the cache. `Map` iterates in insertion order, so dropping the first
-				// key evicts the scope that was cached longest ago. This is insertion
-				// order, not true LRU — a hit does not re-order — which is deliberate: it
-				// costs one line instead of a recency list, and the worst case is one extra
-				// `schemas()` read for a session that returns.
-				while (cached.size > MAX_CACHED_SCOPES) {
-					const oldest = cached.keys().next();
-					if (oldest.done === true) break;
-					cached.delete(oldest.value);
+			if (result.ok !== true) return result;
+			if (result.scope === "agent") {
+				remembered.delete(key);
+				remembered.set(key, { summary: result, at: result.readAt });
+				bound(remembered);
+			} else {
+				// No live agent this time. A remembered answer is this session's own
+				// numbers from when it did have one, so it beats the deployment catalog —
+				// and it is marked, with its own timestamp, so the browser can say so.
+				const past = remembered.get(key);
+				if (past !== void 0) {
+					// Not cached: the next read must be free to find a live agent again.
+					return { ...past.summary, stale: true, recordedAt: past.at };
 				}
 			}
+			// Cache only successful current answers. A transient failure must not stick,
+			// and a stale answer must not be cached (a fresh read should win next time).
+			cached.set(key, result);
+			bound(cached);
 			return result;
 		},
-		/**
-		 * Subscribe to registry changes without reading the registry.
-		 *
-		 * The listener runs once per change and never on subscribe: a new stream
-		 * writes the current version itself, which is what lets a browser close
-		 * the gap between its own read and this stream opening.
-		 * @param listener - called with the new version on every change.
-		 * @returns the disposer detaching this listener.
-		 */
-		subscribe(listener) {
-			listeners.add(listener);
-			return () => {
-				listeners.delete(listener);
-			};
-		},
-		/** Current change version: starts at 0, one bump per registry change. */
-		get version() {
-			return version;
-		},
-		/**
-		 * How many change streams are currently attached.
-		 *
-		 * Read-only introspection, and the one thing that makes the leak invariant
-		 * testable: every way a stream can end must leave this at 0, or a dead tab's
-		 * subscriber outlives its stream for the life of the process.
-		 */
-		get subscribers() {
-			return listeners.size;
+		/** How many sessions currently remember a last-known answer (introspection). */
+		get remembered() {
+			return remembered.size;
 		},
 		dispose() {
 			off();
-			listeners.clear();
+			cached.clear();
+			remembered.clear();
 		},
 	};
 }
 
 /**
- * Plugin body: register the answer route and the change stream.
+ * Plugin body: register the answer route.
  *
- * The answer route speaks the shared `/api` carrier's client-request envelope,
- * which is what `connection.rpc.call(channel, endpoint, payload)` puts on the wire:
+ * The route speaks the shared `/api` carrier's client-request envelope, which is
+ * what `connection.rpc.call(channel, endpoint, payload)` puts on the wire:
  *
  *   request   { type: 'client-request',  rpcId, payload: { sessionId } }
  *   response  { type: 'server-response', rpcId, result }
@@ -363,13 +369,9 @@ export function createToolSummaryReader(ctx) {
  */
 export function apply(ctx) {
 	ctx.effect(() => {
-		// One reader per Loader row: cached, invalidated by `tools/change`, and the
-		// single owner of the change subscription both routes share.
+		// One reader per Loader row: caches the current answer and remembers each
+		// session's last agent-scope answer.
 		const reader = createToolSummaryReader(ctx);
-		// Streams this row has open right now. The carrier tears the routes down on
-		// unload, but an open `ReadableStream` has no idea its route is gone: it
-		// would keep the response body (and any subscriber) alive forever.
-		const streams = new Set();
 		const disposeSummary = ctx.connection.fetch.register({
 			path: `${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}`,
 			// `rpc.call` always POSTs. The body carries only the carrier's envelope,
@@ -388,10 +390,9 @@ export function apply(ctx) {
 				let result;
 				try {
 					// The browser sends the session it is displaying, so the catalog is
-					// read from that session's agent (restrictions applied). Without it
-					// the answer is the deployment's global view and says so.
-					const sessionId = envelope.payload?.sessionId;
-					result = { ok: true, value: reader.read(sessionId) };
+					// read from that session's agent (restrictions applied, and the answer
+					// remembered for when that agent is gone).
+					result = { ok: true, value: reader.read(envelope.payload?.sessionId) };
 				} catch (error) {
 					result = {
 						ok: false,
@@ -409,120 +410,11 @@ export function apply(ctx) {
 				});
 			},
 		});
-		const disposeEvents = ctx.connection.fetch.register({
-			path: `${ROUTE_CHANNEL}/${ROUTE_EVENTS_ENDPOINT}`,
-			// A browser `EventSource` opens this with GET and keeps it open.
-			methods: ["GET"],
-			requestBody: "buffered",
-			// Nothing here reads the registry: the stream carries the change counter
-			// only, so opening or holding it costs no `schemas()` clone.
-			fetch: (request) => openEventStream(reader, request, streams),
-		});
-		// `register` returns an async disposer; Cordis awaits it on unload. The
-		// `tools/change` listener must go with it, or an unloaded row would keep a
-		// listener on a live service; the open streams must go too, or they outlive
-		// the routes that serve them.
 		return () => {
-			for (const shutdown of [...streams]) shutdown();
 			reader.dispose();
 			void disposeSummary();
-			void disposeEvents();
 		};
-	}, "ability-strip: tool route + change stream");
-}
-
-/**
- * Serialize one Server-Sent Events data frame.
- * @param payload - JSON-safe frame body.
- * @returns the complete frame, terminator included.
- */
-function sseFrame(payload) {
-	return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
-/**
- * Serve one registry change stream to one browser tab.
- *
- * The stream says *that* the registry moved, never *what* it now holds: the
- * browser answers a frame by calling the answer route, so this path stays free of
- * registry reads and of any per-client state beyond an open response body.
- *
- * End points by path:
- *   - the browser goes away            request signal aborts → close the body
- *   - the plugin unloads              `streams` disposer → close the body
- *   - the consumer cancels the body   `cancel` → detach the subscriber
- *
- * Closing the body matters for more than tidiness: the carrier's request bridge
- * drains the response body until it ends, so a body nobody closes would leak one
- * responder and one subscriber per abandoned tab.
- *
- * Exported so the leak invariant can be proven per teardown path (the reader the
- * route gets is created inside `apply` and is not reachable from outside).
- * @param reader - the shared registry reader and its change subscription.
- * @param request - the open GET request (its signal tracks the browser).
- * @param streams - open-stream registry, so unload can end this one.
- * @returns the streaming response.
- */
-export function openEventStream(reader, request, streams) {
-	const encoder = new TextEncoder();
-	let controller;
-	let detach = () => {};
-	// The single teardown gate. One flag, not two: a separate "closed" flag would
-	// have to be set by the same paths that must still run the teardown, and any
-	// path that set it without tearing down would leave the subscriber attached
-	// for the lifetime of the process.
-	let cleaned = false;
-	const shutdown = () => {
-		if (cleaned) return;
-		cleaned = true;
-		streams.delete(shutdown);
-		detach();
-		try {
-			controller?.close();
-		} catch {
-			// Already errored or cancelled: nothing left to close.
-		}
-	};
-	const body = new ReadableStream({
-		start(target) {
-			controller = target;
-			const send = (text) => {
-				if (cleaned) return;
-				try {
-					controller.enqueue(encoder.encode(text));
-				} catch {
-					// The body no longer accepts writes, so this stream is over. Tearing
-					// it down here (rather than only flagging it) is the whole point of
-					// the catch: a flagged-but-not-torn-down stream would keep its
-					// subscriber and its `streams` entry forever.
-					shutdown();
-				}
-			};
-			streams.add(shutdown);
-			// Any frame means "re-read". The one written on connect closes the gap
-			// between the browser's own read and this stream opening — and the gap a
-			// dropped stream leaves behind, since `EventSource` reconnects by itself.
-			// The number is for anyone reading the wire, not for the browser.
-			detach = reader.subscribe((version) => send(sseFrame({ version })));
-			send(": ability-strip\n\n");
-			send(sseFrame({ version: reader.version }));
-			request.signal?.addEventListener("abort", shutdown, { once: true });
-			if (request.signal?.aborted === true) shutdown();
-		},
-		cancel() {
-			shutdown();
-		},
-	});
-	return new Response(body, {
-		status: 200,
-		headers: {
-			// The exact prefix the Host's gzip filter skips, so the body is never
-			// buffered into one lump by the compression middleware.
-			"content-type": "text/event-stream",
-			"cache-control": "no-cache",
-			connection: "keep-alive",
-		},
-	});
+	}, "ability-strip: tool route");
 }
 
 /**
