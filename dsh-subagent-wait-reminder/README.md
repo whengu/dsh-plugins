@@ -91,8 +91,14 @@ tar -tzf dist\dsh-subagent-wait-reminder-<版本>.tgz   # 条目带 package/ 前
 ### 安装 / 升级（每次发版递增版本号）
 
 ```powershell
+# 方式 A：本机打包后安装（站在本插件目录里）
 dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-<版本>.tgz   # 用 ./ 相对路径
+
+# 方式 B：git 源直接安装（免打包、不产生 dist/，任何目录执行，需联网）
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 40 位 SHA>&path:/dsh-subagent-wait-reminder"
 ```
+
+两种方式等效，可各机器混用；对比与取舍见仓库根 [INSTALL.md §11.2](../INSTALL.md#112-两种方式怎么选)，方式 B 的验证状态见 [§11.4](../INSTALL.md#114-方式-bgit-源直接安装)。本插件是**纯 Host 侧**插件（无 `dsh.client`）：Host 不需要重启，也不涉及浏览器 `Ctrl+F5`。
 
 ### 验证登记形态
 

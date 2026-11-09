@@ -120,6 +120,10 @@ dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
 
 ## 4. 正式安装步骤（线上 profile）
 
+有两种安装方式，**任选一种**（跨机器场景见第 11 节的完整对比与流程）：
+
+**方式 A：本机打包后安装（本节详述）**
+
 ```powershell
 cd <仓库目录>/<插件目录>
 pnpm pack --pack-destination dist
@@ -128,14 +132,22 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 # 浏览器 Ctrl+F5（有浏览器半边的插件）
 ```
 
+**方式 B：git 源直接安装（免打包）**
+
+```powershell
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 40 位 SHA>&path:/<插件目录>"
+# 浏览器 Ctrl+F5（有浏览器半边的插件）
+```
+
 要点：
 
 - **`--profile` 必填**，且必须和实际启动的 profile 一致（`dsh web` 就是 `dsh --profile web` 的简写，所以安装时用 `--profile web`）。
-- **路径写法**：站在插件目录里用 `./dist/<包名>-<版本>.tgz`。CLI 会把以 `.`/`..` 开头的路径按当前目录锚定成绝对路径再交给 pnpm；**裸相对路径（`dist/x.tgz`）不会被锚定**，会解析到 profile 目录而失败。绝对路径也能用，但不要写进文档或脚本——各机器路径不同。
+- **方式 A 的路径写法**：站在插件目录里用 `./dist/<包名>-<版本>.tgz`。CLI 会把以 `.`/`..` 开头的路径按当前目录锚定成绝对路径再交给 pnpm；**裸相对路径（`dist/x.tgz`）不会被锚定**，会解析到 profile 目录而失败。绝对路径也能用，但不要写进文档或脚本——各机器路径不同。
+- **方式 B 的写法要点**：SHA 用完整 40 位；不需要站在插件目录里；只能装远端已有的 commit。详细说明与验证状态见 §11.4。
 - `dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，然后：检查 `engines.dsh` 兼容性 → 把声明了 `dsh.bundle.patch` 的包追加进 `dsh.profile.bundles`。
 - 第一次对不存在的 profile 名执行会自动初始化一个空 profile——这很容易造成「装到了幽灵 profile、页面永远没效果」的困惑。务必用实际启动的那个 profile 名；**不要为了测试新建 profile**。
 - Host **不需要重启**：`dsh-hmr` 监视 profile 清单并重组层；但浏览器按 bundle revision 缓存客户端代码，必须 `Ctrl+F5` 硬刷新。
-- 移动插件目录（改变 tgz 绝对路径）后，必须从新路径重新 `add`——profile 记录的路径不允许手工编辑，`add` 是唯一合法途径。
+- 用方式 A 时，移动插件目录（改变 tgz 绝对路径）后必须从新路径重新 `add`；用方式 B 则不受目录位置影响。
 
 ---
 
@@ -182,17 +194,21 @@ dsh --profile web --dump-config     # 输出里应能看到该包 patch 插入�
 ## 6. 升级 / 卸载
 
 ```powershell
-# 升级：改版本号 → 打包 → 重新 add（同名包原地替换安装副本）
+# 方式 A：改版本号 → 打包 → 重新 add（同名包原地替换安装副本）
 # 以下命令都在插件目录里执行
 pnpm pack --pack-destination dist
 dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
 
-# 卸载
+# 方式 B：改版本号并 push → 用新 commit 重新 add（免打包，任何目录执行）
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<新完整 SHA>&path:/<插件目录>"
+
+# 卸载（两种方式相同）
 dsh plugin --profile web remove <包名>
 ```
 
-- **每次发布都递增版本号**，保证 tarball 文件名唯一；不要用同一个文件名覆盖已发布的包。
-- `dist/` 不能删：profile 的 `dependencies` 记录的是 tarball 的**本机绝对路径**，之后执行 `dsh plugin install` 还需要这个文件存在。跨机器时 `dist/` 各自独立（见第 11 节）。
+- **每次发布都递增版本号**，保证 tarball 文件名唯一、且插件 UI 能区分不同构建；不要用同一个文件名覆盖已发布的包。
+- 方式 A 下 `dist/` 不能删：profile 的 `dependencies` 记录的是 tarball 的**本机绝对路径**，之后执行 `dsh plugin install` 还需要这个文件存在。方式 B 不产生 `dist/`。
+- 跨机器的升级/回滚流程见第 11.5、11.6 节。
 - 卸载后同样 `Ctrl+F5`（有浏览器半边的插件）。
 
 ---
@@ -354,30 +370,48 @@ dsh-plugins/                       ← 插件单仓库（git）
 
 ## 11. 跨机器使用（多台机器）
 
-**核心结论：安装包不跨机器传递。每台机器在自己的路径上，从同一份 git 源码打包。**
+**核心：安装包不跨机器传递。每台机器从同一份 git 源码出发，用下面两种方式之一把它装进自己的 profile。**
 
-路径问题不是被"解决"，而是被**消灭**——profile 记录的是本机自己的绝对路径，从来没有跨机器共享过任何路径。
+两种方式都**彻底消灭路径问题**——profile 记录的是本机自己的路径（或 git 定位信息），从来没有跨机器共享过路径。**每台机器可以各选一种，互不影响。**
 
 ### 11.1 为什么不能把 tgz / profile 复制到别的机器
 
-profile 的 `package.json` 里，依赖值形如 `file:<绝对路径>.tgz`，且之后的 `dsh plugin install` 依赖这个文件**在原地存在**。那个绝对路径是本机专属的：
-
-- A 机器 clone 到 `<A 的目录>/dsh-plugins`，记录的就是那条路径；
-- B 机器 clone 到 `<B 的目录>/dsh-plugins`（可以是完全不同的盘符或路径风格），记录的必然是另一条。
-
-所以本文和仓库里任何脚本都**不出现具体路径**——一律用占位符或 `./` 相对路径。
-
-所以：
+profile 的 `package.json` 里，依赖值要么形如 `file:<本机绝对路径>.tgz`，要么形如 `git+<url>#<sha>&path:/<目录>`。前者与机器绑定，且之后的 `dsh plugin install` 依赖那个 tgz **在原地存在**。
 
 | 做法 | 结果 |
 | --- | --- |
-| 把 A 的 `dist/*.tgz` 拷到 B 再 `add` | **可以**，前提是在 B 上用 B 自己的路径 `add`（拷贝路径无所谓，`add` 时的路径才被记录） |
-| 把 A 的 profile `package.json` 拷到 B | **不可行**：里面全是 A 的绝对路径，B 上必然失效 |
-| 把 A 的 `dist/` 目录整体搬进 B 的仓库位置 | **不必要**：B 自己 `pnpm pack` 几秒就有 |
+| 把 A 的 `dist/*.tgz` 拷到 B，在 B 上用 B 自己的路径 `add` | **可以**（`add` 时的路径才被记录） |
+| 把 A 的 profile `package.json` / `pnpm-lock.yaml` 拷到 B | **不可行**：里面是 A 的路径 |
+| 把 A 的 `dist/` 整体搬进 B 的仓库位置 | 不必要：B 自己 pack 几秒就有 |
 
-### 11.2 新机器上手（五步）
+### 11.2 两种方式怎么选
 
-前提：本机已装 `node` / `pnpm` / `git` / `dsh`。本机实测可用组合：node `v24.18.1`、pnpm `12.9.1`、dsh `0.2.2-rc.1`。
+| 维度 | 方式 A：本机打包（tarball） | 方式 B：git 源直接安装 |
+| --- | --- | --- |
+| 需要的命令 | `pnpm pack` + `dsh plugin add` | 只有 `dsh plugin add` |
+| `dist/` 目录 | **必需**：不可删、不可覆盖、不进 git | **完全不需要** |
+| 联网时机 | 只在 `git pull` | `git pull` **和**安装时 |
+| 需要 git 客户端 | `git pull` 需要 | 安装时也需要 |
+| profile 记录什么 | `file:<本机 tgz 路径>` | `git+<url>#<sha>&path:/<目录>`，精确到 commit |
+| 回滚粒度 | 按 semver，装回旧 tgz | 按 commit SHA |
+| 回滚前提 | 本机 `dist/` 里还留着那个版本的 tgz | 任何能联网的机器都能做 |
+| 产物陈旧风险 | 有：`git pull` 后忘记重新 pack，装的还是旧包 | **没有** |
+| 仓库换位置/迁移后 | 记录失效，必须重新 `add` | **不受影响**（记的是 git 坐标） |
+| 离线重装（node_modules 被清） | ✅ 本机 tgz 即可 | ❌ 需联网重新拉取 |
+| 给不装 git 的人分发 | ✅ | ❌ |
+| 未来若插件引入构建步骤 | 不受影响 | 需在 profile 的 `pnpm-workspace.yaml` 配 `allowBuilds`（pnpm 默认阻止 git 依赖的构建脚本） |
+
+**选择建议**：
+
+- **方式 B（git 源）的适用场景**：这台机器本来就靠 git 同步代码（网络与 git 已是前提），且希望省掉 `dist/` 这个「每台机器各一份、不进版本库、又不可删」的本地状态，并让 profile 直接记录 commit。跨机器场景下出错点更少。
+- **方式 A（本机打包）的适用场景**：机器访问不了 GitHub；或要把插件给不装 git 的人；或需要在断网时重装。
+- **可以混用**：比如主力机用 B、隔离机用 A，互不冲突。
+
+以下命令的站位统一为「**站在某个插件的目录里**」（`<插件目录>` 指 `dsh-ability-strip` 之类），好处是不出现任何本机绝对路径。
+
+### 11.3 方式 A：本机打包后安装（tarball）
+
+**前提**：本机已装 `node` / `pnpm` / `git` / `dsh`。本机实测可用组合：node `v24.18.1`、pnpm `12.9.1`、dsh `0.2.2-rc.1`。
 
 **第 1 步：clone（目录位置随意，各机器不必一致）**
 
@@ -386,65 +420,129 @@ git clone https://github.com/whengu/dsh-plugins.git
 cd dsh-plugins
 ```
 
-**第 2 步：把每个插件都跑一遍校验**
+**第 2 步：每个插件跑一遍校验**
 
 ```powershell
-cd dsh-ability-strip              # 或其他插件目录
-pnpm check                        # 必须通过
-cd ..
-cd dsh-subagent-wait-reminder
-pnpm check
+cd <插件目录>
+pnpm check            # 必须通过
 cd ..
 ```
 
 **第 3 步：在本机打包（产物落在本机 `dist/`）**
 
 ```powershell
-cd dsh-ability-strip
-pnpm pack --pack-destination dist
-cd ..
-cd dsh-subagent-wait-reminder
+cd <插件目录>
 pnpm pack --pack-destination dist
 cd ..
 ```
 
-产物：`dist/<包名>-<版本>.tgz`。版本号来自源码（见 11.4），不需要手动填。
+产物：`dist/<包名>-<版本>.tgz`。版本号来自源码（见 11.5）。
+
+打包是**可复现**的：同一机器连续两次 `pnpm pack` 字节完全一致（tar 内 mtime 被规范化为固定值，不是真实文件时间），tarball 内路径全是 `package/...` 相对路径，不含任何本机路径。pnpm / Node 版本不同时压缩结果可能不同（内容一致、字节可能不同）。
 
 **第 4 步：安装——用 `./` 相对路径，不要写绝对路径**
 
 ```powershell
-cd dsh-ability-strip
-dsh plugin --profile web add ./dist/dsh-ability-strip-0.3.0.tgz
-cd ..
-cd dsh-subagent-wait-reminder
-dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-0.1.0.tgz
+cd <插件目录>
+dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 cd ..
 ```
 
-**为什么 `./` 可以，裸相对路径不行**：
+**为什么 `./` 行、裸相对路径不行**：
 
-- CLI 只把以 `.` 或 `..` 开头的路径按**调用时的当前目录**解析成绝对路径，再交给 pnpm（`anchorPathSpec` 只匹配 `\.{1,2}`）。实测：失败信息里显示的是解析后的完整本机路径，证明锚定生效。
+- CLI 只把以 `.` 或 `..` 开头的路径按**调用时的当前目录**解析成绝对路径再交给 pnpm（`anchorPathSpec` 只匹配 `\.{1,2}`）。实测：失败信息里显示的是解析后的完整本机路径，证明锚定生效。
 - `dist/x.tgz` 这种**不带 `./`** 的写法不会被锚定，而 pnpm 是在 **profile 目录**里运行的，会解析到错误位置。
 
-所以规则是：**站在插件目录里，用 `./dist/<包名>-<版本>.tgz`**。全程不出现任何机器特定路径。
+**第 5 步：验证** —— 见 11.5 末尾的通用清单。
 
-**第 5 步：验证**
+### 11.4 方式 B：git 源直接安装
+
+一条命令装完，**不需要 `pnpm pack`，不需要 `dist/`**。spec 格式：
+
+```
+git+https://github.com/whengu/dsh-plugins.git#<40 位 commit SHA>&path:/<插件目录>
+```
+
+**第 1 步：取到要安装的 commit**
+
+```powershell
+git clone https://github.com/whengu/dsh-plugins.git
+cd dsh-plugins
+git rev-parse HEAD        # 复制完整的 40 位 SHA
+```
+
+也可以不 clone，直接在 GitHub 网页上复制某个 commit 的完整 SHA。
+
+**第 2 步：安装**
+
+```powershell
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 SHA>&path:/<插件目录>"
+```
+
+两个插件的实际写法（把 `<完整 SHA>` 换成真实值）：
+
+```powershell
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 SHA>&path:/dsh-ability-strip"
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 SHA>&path:/dsh-subagent-wait-reminder"
+```
+
+要点：
+
+- SHA 用**完整 40 位**：短 SHA 实测也能用，但完整 SHA 才保证唯一、不会因未来对象增加产生歧义。
+- 该命令**不需要站在插件目录里**（没有本地路径参与），任何目录执行都行。
+- pnpm 会把仓库拉进自己的 store，再把 `files` 白名单内的内容拷进 profile 的 `node_modules`——所以仍然是**副本**，与源码树无链接。
+- **只能装远端已有的 commit**，未 push 的本地提交取不到。这与「安装即发布」一致，是约束也是保障。
+
+**验证状态（如实）**：
+
+| 已验证（临时目录实测） | 未验证 |
+| --- | --- |
+| pnpm `12.9.1` 能从 monorepo 子目录安装成功 | `dsh plugin add` 在**真实 profile** 上把它登记进 `dsh.profile.bundles` 的端到端效果 |
+| 装出的是副本：链接指向 pnpm store 而非源码树，内容哈希与源码一致 | |
+| profile 同款 `nodeLinker: hoisted` 下 `LinkType` 为空，普通目录，与 tarball 形态一致 | |
+| 安装内容严格遵循 `files` 白名单，`cordis.patch.yml` 在内 | |
+| dsh 的 spec 解析接受该形式（`kind: "git"`）；dsh 自家插件市场用同一格式生成安装目标 | |
+
+> 静态上登记没问题：`reconcile` 读的是 `node_modules/<包名>/package.json` 的 `dsh.bundle`，git 安装同样有这个文件。但**首次在真实 profile 上用方式 B 时，请照 11.5 末尾的清单确认一遍**（尤其是 `dsh.profile.bundles` 是否自动追加、`LinkType` 是否为空）。
+
+### 11.5 升级
+
+两种方式都需**先递增版本号并 push**。版本号写在源码 `package.json` 里，随 git 同步；发起人改一次，其他机器 `git pull` 即得，**不需要每台各改一次**。
+
+**为什么用 git 装也要递增版本号**：插件 UI 显示的是 `package.json` 的 version（例如能力条面板显示 `dsh-ability-strip 0.3.0`）。若两个 commit 都写 0.3.0，页面分辨不出运行的是哪一个。
+
+**方式 A**
+
+```powershell
+git pull
+cd <插件目录>
+pnpm check
+pnpm pack --pack-destination dist
+dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
+cd ..
+```
+
+**方式 B**
+
+```powershell
+git pull
+git rev-parse HEAD        # 取新的完整 SHA
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<新完整 SHA>&path:/<插件目录>"
+```
+
+**两种方式通用的安装后验证**
 
 ```powershell
 dsh plugin --profile web why <包名>          # 应有记录
-dsh --profile web --dump-config              # 应有该包的 entry，且无 skipping 警告
-```
+dsh --profile web --dump-config              # 应有该包 entry，且无 skipping 警告
 
-再看安装形态（`<包名>` 换成实际包名；profile 目录见下方说明）：
-
-```powershell
 $prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }) 'profiles/web'
-(Get-Item (Join-Path $prof "node_modules/<包名>") -Force).LinkType    # 输出为空 = 普通目录（正确）
+(Get-Item (Join-Path $prof 'node_modules/<包名>') -Force).LinkType    # 空 = 普通目录（正确）
 ```
 
-> profile 位置的通用规则是 `$DSH_HOME/profiles/<profile>`，默认 `~/.dsh/profiles/<profile>`。上面用环境变量拼接，避免写死任何具体路径；POSIX shell 下等价于 `${DSH_HOME:-$HOME/.dsh}/profiles/web`。
+> profile 通用规则是 `$DSH_HOME/profiles/<profile>`，默认 `~/.dsh/profiles/<profile>`。上面用环境变量拼接，避免写死路径；POSIX shell 等价于 `${DSH_HOME:-$HOME/.dsh}/profiles/web`。
 
-最后做功能验证：
+功能验证：
 
 | 插件 | 怎么确认它在工作 |
 | --- | --- |
@@ -453,40 +551,37 @@ $prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:U
 
 Host 不需要重启（`dsh-hmr` 监视 profile 清单并重组层）；有浏览器半边的插件必须硬刷新。
 
-### 11.3 升级（每台机器各自做，版本号由 git 同步）
+### 11.6 回滚
+
+**方式 A**：装回旧版本 tgz。
 
 ```powershell
-git pull
 cd <插件目录>
-pnpm check
-pnpm pack --pack-destination dist
-dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
+dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
 ```
 
-**关键：版本号不需要每台机器各改一次。** 版本号写在源码的 `package.json` 里，随 git 同步。发起人在自己机器上递增版本号并 push，其他机器 `git pull` 后打出来的就是新版本号，直接 `add` 即可。
-
-### 11.4 回滚（每台机器各自做）
-
-两条路，按本机有没有那个版本的 tgz 选：
+⚠️ 前提是**本机 `dist/` 里还留着那个版本**。`dist/` 不进 git，每台机器只保留本机打过的包；本机没有该版本时，退到旧提交再打包：
 
 ```powershell
-# 路 1：本机 dist/ 里还有旧版本 tgz（最快）
-dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
-
-# 路 2：本机没打过那个版本——退到旧提交再打包
 git checkout <旧提交>
 cd <插件目录>
 pnpm pack --pack-destination dist
 dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
-git checkout -                       # 回到原分支
-# 打完包就切回，旧 tgz 已在 dist/ 里，dist/ 不进 git 不受影响
+cd ..
+git checkout -            # 回到原分支
 ```
 
-⚠️ **`dist/` 不在 git 里**，所以每台机器的 `dist/` 只保留**本机打过的包**。A 机器打过 0.2.9、B 机器没打过，B 就没有那个 tgz，只能走路 2。这是把 `dist/` 排除出版本的代价，换来的是仓库干净。
+**方式 B**：装回旧 commit，任何能联网的机器都能做。
 
-### 11.5 仓库换位置 / 机器迁移
+```powershell
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<旧完整 SHA>&path:/<插件目录>"
+```
 
-profile 记录的是旧绝对路径，仓库一移动，那条记录就失效（`dsh plugin install` 会报找不到文件）。处理方式**只有一条**：
+**两种方式通用**：不要改源码当回滚用——源码与运行副本无任何链接。
+
+### 11.7 仓库换位置 / 机器迁移
+
+**方式 A**：profile 记录的是旧绝对路径，仓库一移动那条记录就失效（`dsh plugin install` 会报找不到文件）。处理：
 
 ```powershell
 cd <新位置的插件目录>
@@ -494,43 +589,18 @@ pnpm pack --pack-destination dist
 dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 ```
 
-不要手工编辑 profile 的 `package.json` 或 `pnpm-lock.yaml`——`add` 是唯一合法途径，它会同时更新依赖、lockfile 和 `dsh.profile.bundles`。
+**方式 B**：**不受影响**。profile 记录的是 git URL + SHA，与本地 clone 位置无关——这是方式 B 在跨机器场景下的一个实际优势。
 
-### 11.6 可选：要「各机器字节完全相同的包」
+两种方式都**不要**手工编辑 profile 的 `package.json` 或 `pnpm-lock.yaml`——`add` 是唯一合法途径，它会同时更新依赖、lockfile 和 `dsh.profile.bundles`。
 
-本机打包在**相同源码 + 相同 pnpm 版本**下是可复现的。实测依据：
+### 11.8 跨机器绝对不要做的事
 
-- 同一机器连续两次 `pnpm pack`，字节完全一致；
-- tarball 内部的 mtime 被规范化为固定值（1985-10-26 的 npm 幻数），不是真实文件时间；
-- tarball 内路径全是 `package/...` 相对路径，不含任何本机路径。
-
-但 pnpm / Node 版本不同时，压缩结果可能不同（内容一致、字节可能不同）。若确实需要跨机器字节一致，或者想省掉打包步骤，用 **git 源直接安装**：
-
-```powershell
-dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<40 位 commit SHA>&path:/<插件目录>"
-```
-
-实测行为（2026-11-09）：安装成功；产物是**副本**——符号链接指向 pnpm store（`node_modules/.pnpm/...`）而**不是**源码树，内容哈希与源码一致；在 profile 现用的 `nodeLinker: hoisted` 下是普通目录（`LinkType` 为空），与 tarball 安装形态一致，隔离性不打折。
-
-**为什么不把它作为默认**：
-
-| 维度 | 本机打包后安装（默认） | git 源直接安装 |
-| --- | --- | --- |
-| 离线可用 | ✅ 完全不联网 | ❌ 每次安装都要网络 + git |
-| 版本标识 | semver（`0.3.0`），与 `dist/` 文件名对应 | commit SHA |
-| 回滚 | 装回旧版本 tgz，直白 | 需知道旧 SHA |
-| 依赖 | 只需 pnpm | pnpm + git + 网络 |
-| 额外步骤 | 一次 `pnpm pack`（秒级） | 无 |
-
-结论：**默认用本机打包**；git 源安装作为「新机器最快冷启动」或「需要字节级一致」时的备选。
-
-### 11.7 跨机器绝对不要做的事
-
-- ❌ 跨机器复制 profile 的 `package.json` / `pnpm-lock.yaml`（里面是另一台机器的绝对路径）
+- ❌ 跨机器复制 profile 的 `package.json` / `pnpm-lock.yaml`（里面是另一台机器的路径）
 - ❌ 在脚本或文档里写死本机绝对路径（换机器/换目录即失效）
 - ❌ 用 `link:` 或目录安装（源码即线上，见第 1 节）
-- ❌ 把 `dist/` 提交进 git（`.gitignore` 已排除；需要分发就走 11.6 的办法）
+- ❌ 把 `dist/` 提交进 git（`.gitignore` 已排除；要分发就用 11.3 或 11.4）
 - ❌ 为了测试新建 profile（见第 4 节）
+- ❌ 用方式 B 装未 push 的本地提交（git 源只能取远端已有的 commit）
 
 ---
 

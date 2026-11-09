@@ -94,17 +94,22 @@ Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`—
 ### 打包 / 安装 / 升级
 
 ```powershell
-# 站在本插件目录里（仓库 clone 在哪都行，各机器不必一致）
+# 方式 A：本机打包后安装（站在本插件目录里；仓库 clone 在哪都行）
 pnpm check                                   # 三项检查，必须全部 RESULT: PASS
 pnpm pack --pack-destination dist
 node scripts/verify-pack.mjs dist\dsh-ability-strip-<版本>.tgz
 dsh plugin --profile web add ./dist/dsh-ability-strip-<版本>.tgz   # 用 ./ 相对路径
 # 浏览器 Ctrl+F5 硬刷新（有浏览器半边，必须刷新）
+
+# 方式 B：git 源直接安装（免打包、不产生 dist/，任何目录执行，需联网）
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 40 位 SHA>&path:/dsh-ability-strip"
 ```
 
-每次发版**递增版本号**；`dist/` 留在原地（profile 记录 tarball 的本机绝对路径，之后 `dsh plugin install` 还要用）。卸载：`dsh plugin --profile web remove dsh-ability-strip`。
+两种方式等效，可各机器混用；对比与取舍见仓库根 [INSTALL.md §11.2](../INSTALL.md#112-两种方式怎么选)，方式 B 的验证状态见 [§11.4](../INSTALL.md#114-方式-bgit-源直接安装)。
 
-**换机器**：安装包不跨机器传递，每台机器在自己的 clone 路径上重新 `pnpm pack` 再 `add`。完整五步流程见仓库根 [INSTALL.md §11 跨机器使用](../INSTALL.md#11-跨机器使用多台机器)。
+每次发版**递增版本号**；方式 A 的 `dist/` 留在原地（profile 记录 tarball 的本机绝对路径，之后 `dsh plugin install` 还要用）。卸载：`dsh plugin --profile web remove dsh-ability-strip`。
+
+**换机器**：每台机器用上面任一方式装各自的一份。完整流程见仓库根 [INSTALL.md §11 跨机器使用](../INSTALL.md#11-跨机器使用多台机器)。
 
 ### 验证
 
