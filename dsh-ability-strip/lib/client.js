@@ -18,12 +18,11 @@
  * configured Loader rows, and the profile's enabled bundles. A fault (MCP enabled
  * but zero tools) opens a dialog on its own.
  *
- * Read-only by construction: it calls three read-only Remotes, reads its own host
- * half, and subscribes to that half's change stream. It registers no tool, writes
- * no setting, and changes no content. Nothing here runs on a timer: the stream
- * pushes when the tool registry moves, and a read is issued only in response to
- * something that actually happened (a frame, opening the panel, returning to the
- * tab, or the reader pressing refresh).
+ * Read-only by construction: it calls three read-only Remotes and reads its own
+ * host half (the single POST route serving the tool registry summary). It registers
+ * no tool, writes no setting, and changes no content. Nothing here runs on a timer
+ * and no connection is held open: the strip reads when it mounts, when the session
+ * changes, when the panel opens, and when the reader presses refresh.
  *
  * Lazy-CJS bundle form: executing this script only registers the factory;
  * every module-body side effect lives inside it.
@@ -60,7 +59,6 @@ window.__ModuleLoader__.load({
 			warn: "var(--dsw-alias-state-warn-primary)",
 			error: "var(--dsw-alias-state-error-primary)",
 			success: "var(--dsw-alias-state-success-primary)",
-			idle: "var(--dsw-alias-state-idle-primary)",
 			label: "var(--dsw-alias-label-primary)",
 			labelSecondary: "var(--dsw-alias-label-secondary)",
 			labelTertiary: "var(--dsw-alias-label-tertiary)",
@@ -69,7 +67,6 @@ window.__ModuleLoader__.load({
 			mask: "var(--dsw-alias-bg-mask-1)",
 			border: "var(--dsw-alias-border-l2)",
 			primaryFill: "var(--dsw-alias-button-primary-fill)",
-			hover: "var(--dsw-alias-interactive-bg-hover)",
 		};
 
 		/**
@@ -460,6 +457,39 @@ function toolsNote(tools, failed) {
 
 const MUTED = { fontSize: 11, opacity: 0.55 };
 
+// Host reads must end. A Host that never answers (a wedged route, a hung fetch)
+// must not leave the strip refusing every refresh forever: the read is cancelled
+// past this ceiling and reported as a timeout instead.
+const READ_TIMEOUT_MS = 20000;
+
+/**
+ * Where the floating detail panel goes, for one anchor rect and one viewport.
+ *
+ * Pure on purpose: this is the only part of the panel with branches (above or
+ * below, and how tall), and a pure function is the only form of it that can be
+ * reasoned about — and asserted — without a layout engine.
+ *
+ * It opens upward by default, because the anchor is a composer row near the bottom
+ * of the screen. When the anchor sits so high that there is no room above, it flips
+ * downward: a panel whose header (refresh/close) is pushed off screen is a dead
+ * control, and clamping the height while keeping the top negative does exactly that.
+ * @param rect - the anchor's viewport rect (`top`, `left`, `width`, `bottom`).
+ * @param viewport - `{ width, height }` of the window.
+ * @returns a `position: fixed` style fragment: `bottom` when opening upward, `top`
+ *   when opening downward, plus `left`, `width`, and `maxHeight`.
+ */
+function computePlacement(rect, viewport) {
+	const width = Math.min(480, viewport.width - 24);
+	const left = Math.max(12, Math.min(rect.left + rect.width / 2 - width / 2, viewport.width - width - 12));
+	const headSpace = rect.top - 18; // room for the panel header above the anchor
+	const floorSpace = viewport.height - rect.bottom - 8; // room below
+	const clamp = (space) => Math.max(120, Math.min(viewport.height * 0.6, 420, space));
+	if (headSpace >= 120 || headSpace >= floorSpace) {
+		return { left, width, maxHeight: clamp(headSpace), bottom: viewport.height - rect.top + 6 };
+	}
+	return { left, width, maxHeight: clamp(floorSpace), top: rect.bottom + 8 };
+}
+
 		/** The skill count: tabular figures so the width does not jitter per value. */
 		const COUNT = { fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums", minWidth: 10 };
 		/**
@@ -500,10 +530,12 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 		 * Compare two payloads by the fields the strip actually renders.
 		 *
 		 * A silent refresh exists to notice a changed answer, so an identical answer
-		 * must not reach `setState`: that would rebuild the row, invalidate the memo,
-		 * and repaint for nothing. A change stream can deliver several frames for one
+	 * A silent refresh exists to notice a changed answer, so an identical answer
+	 * must not reach `setState`: that would rebuild the row, invalidate the memo,
 		 * visible change (a tool registration touches several layers), so this is
-		 * what keeps a burst of frames from becoming a burst of repaints.
+	 * The panel is the point of a silent refresh being *silent*: every field it
+	 * renders is compared, so the only tolerated identity is a genuinely
+	 * unchanged answer.
 		 * `loadedAt` is deliberately excluded — it always differs, and suppressing it
 		 * means the panel's "读取于" timestamp reflects when the visible content was
 		 * actually obtained, not when the last read happened.
@@ -669,16 +701,6 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 		/**
 		 * Read the live tool registry from this plugin's own host half.
 		 *
-		 * The browser cannot see the tool registry, and that registry is the only
-		 * browser-reachable evidence that an MCP server actually connected: a server
-		 * that fails to connect registers no `mcp__<server>__*` tools. The host half
-		 * of THIS package serves that answer, so no third-party plugin is involved.
-		 * @param connection - the client Connection service.
-		 * @returns the tool summary, or a diagnostic instead of a throw.
-		 */
-		/**
-		 * Read the live tool registry from this plugin's own host half.
-		 *
 		 * The session id is what makes the answer *this* session's: the host
 		 * resolves that session's agent and reads `tools.schemas(agent)`, which is
 		 * the call the real tool executor makes, so `restrict()` masks and scoped
@@ -686,9 +708,10 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 		 * host answers from the global view and labels the payload `scope: "global"`.
 		 * @param connection - the client Connection service (host tool route).
 		 * @param sessionId - session whose agent defines the viewing scope.
+		 * @param signal - optional abort for the underlying `rpc.call`.
 		 * @returns the catalog, or a diagnostic instead of a throw.
 		 */
-		async function readTools(connection, sessionId) {
+		async function readTools(connection, sessionId, signal) {
 			if (connection === void 0) return { error: "connection 服务未挂载" };
 			try {
 				// The same channel/endpoint pair `TOOL_ENDPOINT` names.
@@ -697,7 +720,7 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 				// and misses the route entirely.
 				const response = await connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {
 					sessionId,
-				});
+				}, signal);
 				if (!response.ok) {
 					return { error: `${response.error?.code ?? "unknown"}: ${response.error?.message ?? "连接失败"}` };
 				}
@@ -707,25 +730,42 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 				if (value?.ok === false) {
 					return { error: typeof value.error === "string" ? value.error : "宿主读取工具清单失败" };
 				}
+				// Shape-validate instead of normalizing into a plausible answer. A null/
+				// string/partial value would otherwise become "global, 0 tools, nothing
+				// connected" — a perfectly coherent lie about the deployment. Anything
+				// unrecognizable is a read failure, never a catalog.
+				if (
+					value === null ||
+					typeof value !== "object" ||
+					!Array.isArray(value.servers) ||
+					!Array.isArray(value.local) ||
+					typeof value.totalTools !== "number"
+				) {
+					return { error: "宿主返回了无法识别的工具清单" };
+				}
+				if (value.scope !== "agent" && value.scope !== "global") {
+					return { error: "宿主返回了未知的工具视图标记" };
+				}
 				// Tool entries are normalized where they are rendered, not here: the
 				// component must not assume which shape its payload arrived in.
 				return {
-					servers: Array.isArray(value?.servers) ? value.servers : [],
-					totalTools: value?.totalTools ?? 0,
+					servers: value.servers,
+					totalTools: value.totalTools,
 					// Non-MCP tools. The schemas carry no origin field, so this bucket
 					// means "not an MCP server's tool", not "ships with the Harness".
-					local: Array.isArray(value?.local) ? value.local : [],
+					local: value.local,
 					// `agent` means restrictions applied; `global` means the host had no
 					// agent for this session and answered from the deployment catalog.
-					scope: value?.scope === "agent" ? "agent" : "global",
+					scope: value.scope,
 					// The host remembers the last answer a live agent gave for this session.
 					// When it answers from that memory instead of a live agent, the numbers
 					// are this session's own but no longer current — so they carry the time
 					// they were read and must be presented as a past reading, not as now.
-					stale: value?.stale === true,
-					recordedAt: typeof value?.recordedAt === "string" ? value.recordedAt : void 0,
+					stale: value.stale === true,
+					recordedAt: typeof value.recordedAt === "string" ? value.recordedAt : void 0,
 				};
 			} catch (error) {
+				if (signal?.aborted === true) return { error: "读取已取消" };
 				return { error: describeError(error) };
 			}
 		}
@@ -736,16 +776,21 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 		 * @param remote - the client remote service.
 		 * @param sessionId - session to read the skill catalog for.
 		 * @param connection - the client Connection service (host tool route).
+		 * @param signal - optional abort, forwarded to the host route read.
 		 * @returns one settled payload for the strip.
 		 */
-		async function loadAll(remote, sessionId, connection) {
+		async function loadAll(remote, sessionId, connection, signal) {
 			const [skills, inventory, bundles, tools] = await Promise.all([
 				readSkills(remote, sessionId),
 				readInventory(remote),
 				readBundles(remote),
-				readTools(connection, sessionId),
+				readTools(connection, sessionId, signal),
 			]);
-			const entries = inventory.snapshot?.entries ?? [];
+			// Shape-validate the inventory snapshot here, at the load boundary: the
+			// panel below assumes it is an array and would otherwise throw (and a throw
+			// from `load` blanks the whole slot). A missing or malformed snapshot is
+			// "no rows", not a crash.
+			const entries = Array.isArray(inventory?.snapshot?.entries) ? inventory.snapshot.entries : [];
 			return {
 				skills,
 				inventory,
@@ -848,7 +893,7 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 		 * The description is the tool author's own words, taken from the schema that
 		 * the model sees — so this answers "what is this for" without inventing
 		 * anything. It is clamped to two lines so a long description cannot push the
-		 * rest of the list out of view; the full text stays in the tooltip.
+		 * rest of the list out of view; the tooltip shows the same (already truncated-at-the-host) text, so nothing is lost beyond the host's own cap.
 		 */
 		function ToolRow({ tool }) {
 			return h(
@@ -915,10 +960,10 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 			const { sessionId, load } = props;
 			const [open, setOpen] = React.useState(false);
 			const [state, setState] = React.useState({ phase: "idle" });
-			// The fault dialog opens itself once per fault, and can be re-opened from
-			// the MCP mark. `acknowledged` remembers the fault the reader has already
-			// seen, so a change stream that keeps reporting the same fault cannot
-			// re-nag on every frame.
+			// The fault dialog opens itself once per fault, and can be re-opened
+			// from the MCP mark (mouse) and from the detail panel (a real button).
+			// `acknowledged` remembers the fault the reader has already seen, so a
+			// recurring fault cannot nag on every re-read.
 			const [alertOpen, setAlertOpen] = React.useState(false);
 			const acknowledgedFault = React.useRef(void 0);
 			// The floating panel is placed from this row's live rect.
@@ -936,16 +981,19 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 			// Monotonic request id: a superseded fetch must not overwrite the newer
 			// answer when the reader switches sessions mid-flight.
 			const requestId = React.useRef(0);
-			// In-flight guard. Without it a stream frame arriving while a read is
-			// already running would stack a second read on the same Host.
+			// In-flight guard. Despite the name, the smoke in this file: a second call
+			// while a read is running is dropped and compensated with the LATEST
+			// caller's options (not the first one's), so the request that matters wins.
 			const inFlight = React.useRef(false);
-			// When `run` is called while a read is in flight (session switch, manual
-			// refresh, another frame), the caller's result must replace the in-flight
-			// one. Without this the in-flight read's result would be written to the
-			// new session's state because `requestId` was never incremented. A boolean
-			// rather than a queue on purpose: a burst of frames collapses into one
-			// compensating read instead of one read per frame.
-			const rerunPending = React.useRef(false);
+			// The caller whose read was dropped by the in-flight guard. `finally` runs
+			// THIS instead of `options`: a manual refresh dropped behind a silent open
+			// must come back as a refresh, not stay silent.
+			const pendingOptions = React.useRef(void 0);
+			// The in-flight read's abort handle. Two owners: the timeout (a Host that
+			// never answers must not leave the strip refusing every refresh forever)
+			// and unmount (a read nobody is waiting for must not keep a Host request
+			// alive). One read at a time, so a single slot is enough.
+			const activeRead = React.useRef(null);
 
 			const run = React.useCallback(
 				async (options) => {
@@ -957,25 +1005,31 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 					// answered: this call is dropped (and compensated) instead.
 					if (inFlight.current) {
 						// Invalidate the in-flight read so its stale result is discarded,
-						// and schedule a re-read when it settles.
+						// and remember the LATEST caller's options for the compensation.
 						requestId.current += 1;
-						rerunPending.current = true;
+						pendingOptions.current = options;
 						return;
 					}
 					inFlight.current = true;
 					const id = requestId.current + 1;
 					requestId.current = id;
-					// A silent re-read (a stream frame, returning to the tab, opening the
-					// panel) must not flip the strip into its loading state: that would
-					// repaint the row and, worse, look like a user-initiated read. Only an
-					// explicit refresh shows progress.
+					// A silent re-read (opening the panel or a mount) must not flip the
+					// strip into its loading state: that would repaint the row and, worse,
+					// look like a user-initiated read. Only an explicit refresh shows
+					// progress.
 					if (options?.silent !== true) {
 						// Keep the previous payload while re-reading so a refresh does not
 						// blank the strip mid-flight.
 						setState((prev) => ({ ...prev, phase: "loading", error: void 0 }));
 					}
+					// Hard ceiling for one read. `loadAll` forwards this signal to the
+					// host route's `rpc.call`, so an abort actually cancels the request
+					// instead of only forgetting about it. Unmount aborts the same handle.
+					const controller = new AbortController();
+					activeRead.current = controller;
+					const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
 					try {
-						const payload = await loadRef.current(sessionId);
+						const payload = await loadRef.current(sessionId, controller.signal);
 						if (id !== requestId.current) return;
 						// A silent re-read that returns exactly what is already on screen
 						// must not re-render: the same answer would otherwise rebuild the
@@ -993,19 +1047,36 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 						if (id !== requestId.current) return;
 						// A thrown load must be visible: the strip exists to remove blind
 						// spots, so a silent failure would defeat its only purpose. A failed
-						// re-read keeps the last good payload and states the failure.
-						setState((prev) => ({ ...prev, phase: "failed", error: describeError(error) }));
+						// re-read keeps the last good payload and states the failure. An
+						// aborted read names the abort, because "已取消" from a timeout
+						// reads like a deliberate stop.
+						setState((prev) => ({
+							...prev,
+							phase: "failed",
+							error: controller.signal.aborted ? "读取超时，已取消" : describeError(error),
+						}));
 					} finally {
+						clearTimeout(timer);
+						if (activeRead.current === controller) activeRead.current = null;
 						inFlight.current = false;
-						// If a call arrived while this read was in flight, run it now.
-						if (rerunPending.current) {
-							rerunPending.current = false;
-							void run(options);
+						// If a call arrived while this read was in flight, run it now —
+						// with the LATEST caller's options, not this read's.
+						const pending = pendingOptions.current;
+						pendingOptions.current = void 0;
+						if (pending !== void 0) {
+							void run(pending);
 						}
 					}
 				},
 				[sessionId],
 			);
+
+			// Unmount: cancel the in-flight read so it does not keep a Host request
+			// alive for a reader nobody is looking at. Late `setState` calls from that
+			// read are no-ops after unmount, so the abort's only job is the request.
+			React.useEffect(() => {
+				return () => activeRead.current?.abort();
+			}, []);
 
 			// No change stream. This row used to hold an SSE connection per tab and
 			// re-read on every frame. It does not any more, by decision: the strip is a
@@ -1021,6 +1092,11 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 			}, [run, sessionId]);
 
 			const payload = state.payload;
+			// The whole load failed before producing any payload (a thrown `loadAll`).
+			// The chips otherwise read `payload === void 0` as "not read yet" and would
+			// show "…" forever — the error text exists but sits below the fold. This
+			// flag lets every chip say "读取失败" instead of pretending nothing happened.
+			const loadFailed = state.phase === "failed" && payload === void 0;
 			const skillCount = payload?.skills?.entries?.length;
 			const mcpRows = payload?.mcpRows ?? [];
 			// The answer the whole MCP mark exists for: does at least one MCP server
@@ -1121,7 +1197,9 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 			// state is a glyph there and the words live in the tooltip and the detail.
 			const mcpStateLabel =
 				payload === void 0
-					? "读取中"
+					? loadFailed
+						? "读取失败"
+						: "读取中"
 					: payload.tools?.error !== void 0
 						? "工具清单读取失败"
 						: payload.tools?.stale === true
@@ -1144,13 +1222,25 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
 					});
+				else if (loadFailed)
+					// The whole load threw; there is no skills block to read. Saying
+					// "读取失败" beats a permanent "…".
+					body = h(ui.IconUnknownOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					});
 				else if (skillCount === void 0) body = h("span", MUTED, "…");
 				else body = h("span", COUNT, String(skillCount));
 				return h(
 					"span",
 					{
 						style: CHIP,
-						title: skills?.error !== void 0 ? "技能清单读取失败" : "本会话可见的 skill 数量",
+						title:
+							skills?.error !== void 0 || loadFailed
+								? state.phase === "failed" && state.error !== void 0
+									? `读取失败：${state.error}`
+									: "技能清单读取失败"
+								: "本会话可见的 skill 数量",
 						"aria-label": "技能",
 					},
 					h(ui.IconSkillOutlineRegular, { size: 12 }),
@@ -1160,7 +1250,13 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 
 			const renderMcpChip = () => {
 				let body;
-				if (payload === void 0) body = h("span", MUTED, "…");
+				if (payload === void 0)
+					body = loadFailed
+						? h(ui.IconUnknownOutlineRegular, {
+								size: 12,
+								style: { color: "var(--dsw-alias-state-error-primary)" },
+							})
+						: h("span", MUTED, "…");
 				else if (payload.tools?.error !== void 0)
 					body = h(ui.IconUnknownOutlineRegular, {
 						size: 12,
@@ -1256,7 +1352,9 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 				 */
 				const state =
 					payload === void 0
-						? "pending"
+						? loadFailed
+							? "unreadable"
+							: "pending"
 						: tools === void 0 || tools.error !== void 0
 							? "unreadable"
 							: tools.scope !== "agent"
@@ -1513,9 +1611,29 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 					h(
 						"div",
 						{ style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5, paddingTop: 5 } },
-						"判据是工具注册表里存在 mcp__<server>__* 工具；注册表变化**不会**自动推送过来，这里只在你打开明细或点刷新时重读。",
+						"判据是工具注册表里存在 mcp__<server>__* 工具；注册表变化不会自动推送过来，这里只在你打开明细或点刷新时重读。",
 						"连不上、或连上但被本会话的工具限制挡住，都会让这个视图里没有它的工具——所以「本会话视图里没有」不等于「服务器没连上」。",
 					),
+					// The fault dialog is the one thing this section cannot restate, and a
+					// keyboard reader who dismissed it has no way to reopen it from the row
+					// (the row is one button; the mark inside it carries a mouse-only click).
+					// A real button here gives the dialog an equivalent, reachable path.
+					mcpFault
+						? h(
+								"div",
+								{ style: { paddingTop: 4 } },
+								h(
+									ui.Button,
+									{
+										variant: "ghost",
+										size: "sm",
+										"aria-label": "查看 MCP 故障原因",
+										onClick: () => setAlertOpen(true),
+									},
+									"查看故障原因",
+								),
+							)
+						: null,
 				);
 			})();
 
@@ -1572,9 +1690,8 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 			 * disguise: it takes a tab stop and then does nothing with it.
 			 */
 			const toggle = () => {
-				// Opening the panel is a request for detail, so it reads: the stream already
-				// keeps the MCP answer live, but the skill and plugin blocks have no change
-				// signal of their own, and this is the one moment the reader asks to see them.
+				// Opening is a request for detail, so it reads — the panel must show
+				// what is true now, and opening the panel is the reader asking for it.
 				if (!open) void run({ silent: true });
 				setOpen((prev) => !prev);
 			};
@@ -1608,6 +1725,7 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 						role: "button",
 						tabIndex: 0,
 						"aria-expanded": open,
+						"aria-controls": "ability-strip-detail",
 						"aria-label": open ? "收起明细" : "展开明细",
 						title: open ? "收起明细" : "明细",
 						onClick: toggle,
@@ -1618,6 +1736,10 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 							event.preventDefault();
 							toggle();
 						},
+						// Returning focus to this row when the panel closes is part of the
+						// dialog contract (the panel took focus when it opened), so a
+						// keyboard user lands back where they started instead of being
+						// dropped at the top of the document.
 						onMouseDown: (event) => event.stopPropagation(),
 						style: {
 							display: "inline-flex",
@@ -1651,7 +1773,15 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 					? ReactDOM.createPortal(
 							h(DetailPanel, {
 								anchorRef,
-								onClose: () => setOpen(false),
+								onClose: () => {
+								setOpen(false);
+								// Return focus to the toggle row: the panel took it when it
+								// opened, so the reader should land back where they started.
+								// A timeout lets the portal unmount before the anchor is
+								// refocused; focusing an element on the same tick is fine too,
+								// so this is defensive, not load-bearing.
+								setTimeout(() => anchorRef.current?.focus?.(), 0);
+							},
 								loadedAt: payload.loadedAt,
 								loading: state.phase === "loading",
 								onRefresh: () => void run(),
@@ -1759,30 +1889,37 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 
 			// Place the panel from the anchor's live rect on open, and keep it placed
 			// while the window resizes. `fixed` keeps it put when the page scrolls.
-			// The panel opens upward, so a short viewport is clamped by height rather
-			// than pushing its top off screen.
+			// Upward with a floor, downward when the anchor sits too high: an anchor
+			// near the top of the viewport has no room above it, and a panel whose
+			// head (refresh/close buttons) is pushed off screen is a dead control.
+			// The direction is decided once per placement with the anchor's live rect.
 			React.useEffect(() => {
 				const place = () => {
 					const anchor = anchorRef.current;
 					if (anchor === null) return;
-					const rect = anchor.getBoundingClientRect();
-					const width = Math.min(480, window.innerWidth - 24);
-					const left = Math.max(
-						12,
-						Math.min(
-							rect.left + rect.width / 2 - width / 2,
-							window.innerWidth - width - 12,
-						),
+					setPos(
+						computePlacement(anchor.getBoundingClientRect(), {
+							width: window.innerWidth,
+							height: window.innerHeight,
+						}),
 					);
-					const maxHeight = Math.max(
-						120,
-						Math.min(window.innerHeight * 0.6, 420, rect.top - 18),
-					);
-					setPos({ left, width, maxHeight, bottom: window.innerHeight - rect.top + 6 });
 				};
 				place();
 				window.addEventListener("resize", place);
-				return () => window.removeEventListener("resize", place);
+				// The composer dock can change height (a textarea growing, a banner), which
+				// moves the anchor without a window resize — a fixed panel would then
+				// hover at the old spot. Watching the anchor's own box re-places on layout
+				// changes it can see; the window resize covers the rest.
+				let observer = null;
+				const observed = anchorRef.current?.parentElement ?? null;
+				if (observed !== null && typeof ResizeObserver !== "undefined") {
+					observer = new ResizeObserver(place);
+					observer.observe(observed);
+				}
+				return () => {
+					window.removeEventListener("resize", place);
+					observer?.disconnect();
+				};
 			}, [anchorRef]);
 
 			// Escape closes it. Capture phase plus stopPropagation keeps the composer's
@@ -1801,6 +1938,16 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 				window.addEventListener("keydown", onKey, true);
 				return () => window.removeEventListener("keydown", onKey, true);
 			}, []);
+
+			// Move focus into the panel once it is placed. A dialog that opens and
+			// leaves focus on the toggle button makes the reader tab across the whole
+			// page to reach the first control; parking focus here is the dialog
+			// contract. The anchor restores focus on close (in the parent's onClose).
+			React.useEffect(() => {
+				if (pos === null) return void 0;
+				panelRef.current?.focus?.();
+				return void 0;
+			}, [pos]);
 
 			// A click anywhere outside the panel closes it, like every other popover.
 			// `mousedown` rather than `click`: a drag that starts inside and ends
@@ -1829,8 +1976,12 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 				"div",
 				{
 					ref: panelRef,
+					// Focusable so the panel can take focus when it opens (see the
+					// focus effect above); the tab order then starts at its controls.
+					tabIndex: -1,
 					role: "dialog",
 					"aria-label": "能力明细",
+					id: "ability-strip-detail",
 					style: {
 						position: "fixed",
 						// Nothing is painted until the anchor has been measured, so the
@@ -1843,6 +1994,7 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 						gap: 2,
 						padding: "8px 10px",
 						zIndex: 60,
+						outline: "none",
 						background: "var(--dsw-alias-bg-layer-1, #fff)",
 						color: "inherit",
 						border: "1px solid var(--dsw-alias-border-l3, rgba(0,0,0,0.12))",
@@ -1921,7 +2073,10 @@ const MUTED = { fontSize: 11, opacity: 0.55 };
 						// the inject face's one: the component already receives the session id
 						// as a built-in standard prop, and that is the value it must read.
 						inject: () => ({
-							load: (sessionId) => loadAll(remote, sessionId, connection),
+							// The renderer calls this with `(sessionId, signal)`; the signal
+							// reaches the host route read, so a superseded or unmounted read
+							// can be cancelled instead of spending a Host request.
+							load: (sessionId, signal) => loadAll(remote, sessionId, connection, signal),
 						}),
 					},
 					RuntimeStrip,

@@ -193,6 +193,35 @@ if (reg !== undefined) {
   }
 }
 
+
+// The host value is shape-validated before it becomes a payload: a malformed
+// answer must read as a failure, never as a plausible "global, 0 tools" lie.
+// This is a source-level tripwire so the guard cannot regress silently.
+if (!source.includes("value.scope !== \"agent\" && value.scope !== \"global\"")) {
+	problems.push("readTools must reject an unrecognizable host value shape");
+}
+if (!source.includes("typeof value.totalTools !== \"number\"")) {
+	problems.push("readTools must require totalTools to be a number");
+}
+if (!source.includes("value.scope !== \"agent\" && value.scope !== \"global\"")) {
+	problems.push("readTools must require a known scope label");
+}
+
+// The read path must stay cancellable and bounded, and a dropped trigger must
+// carry the LATEST caller intent. These are runtime behaviours that a hook stub
+// cannot exercise faithfully, so they are pinned at the source level.
+// Each of these must appear as a complete expression, not merely as a name: a
+// rename that orphans the call site is exactly the regression this catches.
+for (const [label, needle] of [
+	["a bounded read", "setTimeout(() => controller.abort(), READ_TIMEOUT_MS)"],
+	["a cancellable read", "connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {"],
+	["the abort signal reaching rpc.call", "}, signal)"],
+	["the latest dropped trigger", "pendingOptions.current = options"],
+	["the compensating read using it", "void run(pending)"],
+	["unmount cancelling the read", "activeRead.current?.abort()"],
+]) {
+		if (!source.includes(needle)) problems.push(`client must keep ${label}: ${needle}`);
+}
 if (typeof dispose === "function") dispose();
 
 console.log("---");

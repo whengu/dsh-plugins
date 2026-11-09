@@ -1,6 +1,6 @@
 /**
  * Host-half checks: the `mcp__<server>__<tool>` split, the per-server summary, the
- * two-route registration contract, and the change stream that replaced polling.
+ * single-route registration contract, and the cache/remembered read path.
  *
  * The MCP tool naming rule is the load-bearing assumption of the whole feature, so
  * it is pinned here against real registry shapes rather than assumed.
@@ -9,10 +9,8 @@
 import {
 	apply,
 	createToolSummaryReader,
-	inject,
 	MAX_CACHED_SCOPES,
 	MAX_DESCRIPTION_CHARS,
-	name,
 	ROUTE_CHANNEL,
 	ROUTE_ENDPOINT,
 	readToolSummary,
@@ -336,22 +334,30 @@ const fakeCtx = {
       if (index >= 0) changeListeners.splice(index, 1);
     };
   },
-  effect(callback) {
-    const disposer = callback();
-    // Cordis owns this disposer; the check drives it to prove unload cleanup.
-    fakeCtx.effectDisposer = disposer;
-    return disposer;
-  },
-  connection: {
-    fetch: {
-      register(route) {
-        registered.push(route);
-        return async () => {
-          disposed.push(route.path);
-        };
-      },
-    },
-  },
+	connection: {
+		fetch: {
+			register(route) {
+				registered.push(route);
+				return async () => {
+					disposed.push(route.path);
+				};
+			},
+		},
+	},
+	effect(callback) {
+		const disposer = callback();
+		// Cordis owns this disposer and it is single-shot: the check drives it once,
+		// and simulates Cordis idempotence so a repeated call is a no-op (the real
+		// engine never calls twice, and the effect cleanup must not run twice when it
+		// somehow does).
+		let used = false;
+		fakeCtx.effectDisposer = () => {
+			if (used) return void 0;
+			used = true;
+			return typeof disposer === "function" ? disposer() : disposer;
+		};
+		return fakeCtx.effectDisposer;
+	},
 };
 
 apply(fakeCtx);
@@ -515,6 +521,28 @@ const wakeWarm = wakeReader.read("w");
 check(wakeWarm.scope === "agent", "once the agent appears, the cached global answer must not be reused");
 check(wakeSchemas === 2, `liveness changing must force a re-read, saw ${wakeSchemas}`);
 wakeReader.dispose();
+
+
+// --- unload must dispose the route and drop the change listener -------------
+// `apply` returns a disposer through Cordis` effect; the check drives it exactly
+// once and asserts both halves of the cleanup. Without this, an unloaded row would
+// keep a listener on a live service and a route in the registry.
+const routesAtRegister = registered.length;
+check(routesAtRegister === 1, `apply must register exactly one route, saw ${routesAtRegister}`);
+const listenersBeforeDispose = changeListeners.length;
+check(listenersBeforeDispose === 1, "apply must subscribe to tools/change exactly once");
+if (typeof fakeCtx.effectDisposer === "function") {
+	await fakeCtx.effectDisposer();
+	check(disposed.length === 1, `unload must dispose the route, saw ${disposed.length}`);
+	check(changeListeners.length === 0, "unload must drop the tools/change listener");
+	// A second dispose is a no-op in Cordis (single-shot effect disposers), so the
+	// route is not torn down twice. The fake records by push, so no growth proves the
+	// disposer ran once.
+	await fakeCtx.effectDisposer();
+	check(disposed.length === 1, "a repeated dispose must be a no-op");
+} else {
+	problems.push("apply did not return an effect disposer");
+}
 
 console.log("---");
 if (problems.length > 0) {

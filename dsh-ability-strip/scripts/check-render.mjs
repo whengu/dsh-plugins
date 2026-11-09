@@ -12,74 +12,57 @@ import { fileURLToPath } from "node:url";
 const pkgDir = process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(pkgDir, "lib/client.js"), "utf8");
 
-// A minimal DOM surface: the bundle reads `document.body` as the portal target,
-// measures the anchor row, and watches visibility. All are stubbed so the
-// component can be executed without a browser; nothing here renders.
+// A minimal DOM surface: the bundle reads `document.body` as the portal target.
+// Only the parts the component actually touches are stubbed; nothing renders.
+// `addEventListener` is a no-op because the client no longer registers any
+// document-level listeners (the visibility handler left with the change stream).
 const BODY = { nodeType: 1, tagName: "BODY" };
-const documentListeners = [];
 globalThis.document = {
-  body: BODY,
-  // The strip reads only while the tab is visible.
-  visibilityState: "visible",
-  addEventListener(type, listener) {
-    documentListeners.push({ type, listener });
-  },
-  removeEventListener(type, listener) {
-    const at = documentListeners.findIndex((e) => e.type === type && e.listener === listener);
-    if (at >= 0) documentListeners.splice(at, 1);
-  },
+	body: BODY,
+	addEventListener() {},
+	removeEventListener() {},
 };
 // Intervals are CAPTURED, never scheduled: this is the tripwire that proves the
-// strip no longer runs one. A change stream replaced the 15 s poll, so any entry
-// here is a regression, and case 7 fails on the spot.
+// strip runs no self-refresh timer. Any entry here is a regression, and case 7
+// fails on the spot. `setTimeout` is real (the read timeout uses it), so only
+// intervals are captured — a stray interval has no way to hide.
 const timers = [];
 globalThis.setInterval = (fn, ms) => {
   timers.push({ fn, ms });
   return timers.length;
 };
 globalThis.clearInterval = () => {};
-// `EventSource` is the push channel. Captured rather than connected: the checks
-// drive frames directly and would otherwise hold a live connection open.
+// `EventSource` is a tripwire, not a harness: the client must NOT open one any
+// more (the change stream was removed with 0.10.0). The class exists only so a
+// regression that re-adds streaming shows up in `sources` and fails case 7.
 const sources = [];
 class FakeEventSource {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSED = 2;
-  constructor(url) {
-    this.url = url;
-    this.readyState = FakeEventSource.CONNECTING;
-    this.closed = false;
-    this.listeners = new Map();
-    sources.push(this);
-  }
-  addEventListener(type, listener) {
-    const bucket = this.listeners.get(type);
-    if (bucket === undefined) this.listeners.set(type, [listener]);
-    else bucket.push(listener);
-  }
-  close() {
-    this.readyState = FakeEventSource.CLOSED;
-    this.closed = true;
-  }
-  /**
-   * Deliver one event. `open` moves the source to OPEN the way the real one does;
-   * every other type leaves `readyState` alone, so a check can stage a transient
-   * drop (CONNECTING) and a fatal one (CLOSED) before firing `error`.
-   */
-  emit(type, data) {
-    if (type === "open") this.readyState = FakeEventSource.OPEN;
-    for (const listener of [...(this.listeners.get(type) ?? [])]) listener({ data, type });
-  }
+	constructor(url) {
+		this.url = url;
+		sources.push(this);
+	}
 }
-globalThis.EventSource = FakeEventSource;
+// Window events are recorded so a check can re-trigger the panel's placement
+// effect (a resize) and prove the flip-down branch — the stub otherwise has no
+// way to fire a layout change.
+const windowListeners = {};
 globalThis.window = {
   __ModuleLoader__: { load(r) { globalThis.__reg = r; } },
   innerWidth: 1200,
   innerHeight: 800,
-  addEventListener() {},
-  removeEventListener() {},
+  addEventListener(type, fn) {
+    (windowListeners[type] ??= []).push(fn);
+  },
+  removeEventListener(type, fn) {
+    const bucket = windowListeners[type] ?? [];
+    const index = bucket.indexOf(fn);
+    if (index >= 0) bucket.splice(index, 1);
+  },
+  dispatchEvent() {
+    for (const fn of [...(windowListeners.resize ?? [])]) fn();
+    return true;
+  },
 };
-
 /**
  * Build one element node.
  *
@@ -92,12 +75,18 @@ globalThis.window = {
 const createElement = (type, props, ...children) => {
   const flat = children.flat(Infinity);
   const base = props ?? {};
-  const resolved = flat.length === 0
-    ? base
-    : { ...base, children: flat.length === 1 ? flat[0] : flat };
-  return { type, props: resolved, children: flat };
+  const resolved = flat.length === 0 ? base : { ...base, children: flat.length === 1 ? flat[0] : flat };
+  const node = { type, props: resolved, children: flat };
+  // The detail panel measures its anchor and re-places on layout changes. The
+  // stub can't render, so a ref prop is wired to the node and the node carries
+  // a replaceable rect — that is what lets the placement branches be exercised.
+  if (typeof resolved.ref === 'object' && resolved.ref !== null) {
+    resolved.ref.current = node;
+  }
+  node.rect = { top: 400, left: 400, width: 60, height: 22 };
+  node.getBoundingClientRect = () => node.rect;
+  return node;
 };
-
 // --- hook runtime ---------------------------------------------------------
 let hookState = [];
 let hookIndex = 0;
@@ -675,6 +664,16 @@ text = textOf(render(disconnectedProps));
 check(has(text, "没有 MCP 服务器注册工具"), "the panel must state that no server registered tools");
 check(has(text, "已配置 1 个客户端条目"), "the configured row must still be listed apart");
 
+// The fault dialog has a keyboard-reachable equivalent inside the panel: the row
+// toggle is one button and the chip click is mouse-only, so a keyboard reader who
+// dismissed the dialog needs a real button here to reopen it.
+// The panel is one of possibly two dialogs (the fault Modal may be open); the
+// whole tree is what counts here — the button must exist somewhere.
+check(
+	has(textOf(render(disconnectedProps)), "查看故障原因"),
+	"the panel must offer a real button to reopen the fault dialog",
+);
+
 // --- Case 5: empty but successful ----------------------------------------
 // No MCP configured at all. This is NOT a fault: nagging about a feature the
 // reader does not use is noise, and noise gets a plugin uninstalled.
@@ -780,7 +779,16 @@ await settle();
 text = textOf(render(throwProps));
 log("case6 (throw)", render(throwProps));
 check(text.some((t) => t.includes("读取失败：network down")), "a thrown load must be shown");
-check(text.includes("…"), "a thrown load leaves the counts unknown, not zero");
+	// The chips must not linger on "…" after the whole load threw: the error text
+	// sits below the fold, so the collapsed row has to carry the failure itself.
+	// Each mark turns into the failure glyph instead of a forever-pending ellipsis.
+	check(!text.includes("…"), "a thrown load must not leave the chips on a forever-pending ellipsis");
+	check(
+		findByLabel(render(throwProps), "技能") !== undefined &&
+			findByLabel(render(throwProps), "MCP") !== undefined &&
+			findByLabel(render(throwProps), "工具") !== undefined,
+		"all three marks must still exist after a thrown load",
+	);
 
 // --- Case 7: no timer, no stream, one read on mount ----------------------
 // The strip reads on demand now: mounting reads once, and nothing is pushed.
@@ -880,6 +888,58 @@ check(openCount === reopenCount, "closing the panel must not read");
 // it was for.
 check(timers.length === 0, `no mount may register an interval, saw ${timers.length}`);
 
+
+
+
+// --- The detail panel opens the way that fits its anchor --------------------
+// Placement is the panel's only branching logic, so it was lifted into a pure
+// function: it can then be asserted here, from the shipped source itself, instead
+// of through a hook stub that shares one state array across components.
+// A panel forced upward with no headroom pushes its header (refresh/close) off
+// screen, which is a dead control — that is the case this pins.
+const computePlacement = (() => {
+  const start = source.indexOf('function computePlacement(');
+  if (start < 0) return undefined;
+  // The function ends at the first line that is exactly `}` at column 0.
+  const rest = source.slice(start);
+  const end = rest.search(/\n\}/);
+  if (end < 0) return undefined;
+  return new Function(`${rest.slice(0, end + 2)}; return computePlacement;`)();
+})();
+check(typeof computePlacement === 'function', 'the shipped source must define computePlacement');
+if (typeof computePlacement === 'function') {
+  const viewport = { width: 1200, height: 800 };
+  // A composer row near the bottom: plenty of room above, so it opens upward.
+  const low = computePlacement({ top: 700, left: 600, width: 60, bottom: 722 }, viewport);
+  check(typeof low.bottom === 'number', 'with room above, the panel must open upward');
+  check(low.top === undefined, 'an upward panel must not also carry a top');
+  // Pinned near the top of the viewport: no headroom, so it must flip downward.
+  const high = computePlacement({ top: 12, left: 600, width: 60, bottom: 34 }, viewport);
+  check(typeof high.top === 'number', 'an anchor near the top must flip the panel downward');
+  check(high.bottom === undefined, 'a downward panel must not also carry a bottom');
+  check(high.top > 34, 'a downward panel must start below its anchor');
+  // The header must stay on screen in both orientations.
+  check(low.maxHeight >= 120 && low.maxHeight <= 420, 'the panel height must stay bounded');
+  check(high.maxHeight >= 120 && high.maxHeight <= 420, 'the flipped panel height must stay bounded');
+}
+
+
+// --- No markdown leaks into the rendered text ------------------------------
+// Panel copy is a plain JS string, not markdown: `**bold**` would print its
+// asterisks to the reader. A reader hit exactly that, so it is pinned here.
+{
+  mount(okProps);
+  await settle();
+  const open = findButton(render(okProps), '明细');
+  if (open) open.props.onClick();
+  await flush();
+  const rendered = textOf(render(okProps));
+  const withAsterisks = rendered.filter((t) => t.includes('**'));
+  check(
+    withAsterisks.length === 0,
+    `no rendered string may contain markdown asterisks, saw ${JSON.stringify(withAsterisks.slice(0, 2))}`,
+  );
+}
 
 // --- The collapsed row is one control, not several ------------------------
 // It carries `role="button"`, so it must answer the keyboard. A role that takes a
