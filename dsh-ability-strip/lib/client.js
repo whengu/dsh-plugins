@@ -3,17 +3,20 @@
  *
  * A thin strip docked under the composer, inside the input bar's own dock. It
  * answers one question: *what does THIS session actually have available?* — as
- * two marks that never merge:
+ * three marks that never merge:
  *
  *   - **skill**  how many human-invocable skills this session sees (`skills/list`)
  *   - **MCP**    whether any MCP server actually connected, judged by whether
  *                `mcp__<server>__*` tools are registered in the live tool registry
  *                (read via this package's own host half over `/api/ability-strip`)
+ *   - **tools**  how many tools the model is offered in total, MCP included. The
+ *                host reads `tools.schemas(agent)` for this session, so the count
+ *                and the listed names carry the same restrictions a model step sees.
  *
  * The detail panel floats above the page (portalled, fixed) and lists the skills,
- * the connected MCP servers with tool counts, the configured Loader rows, and the
- * profile's enabled bundles. A fault (MCP enabled but zero tools) opens a dialog
- * on its own.
+ * the connected MCP servers with tool counts, the non-MCP tool names, the
+ * configured Loader rows, and the profile's enabled bundles. A fault (MCP enabled
+ * but zero tools) opens a dialog on its own.
  *
  * Read-only by construction: it calls three read-only Remotes, reads its own host
  * half, and subscribes to that half's change stream. It registers no tool, writes
@@ -124,6 +127,7 @@ window.__ModuleLoader__.load({
 			refresh: "M13.2 8A5.2 5.2 0 1 1 11.5 4M13.2 2.9v3.3h-3.3",
 			skill: "M8 2.1l1.6 4.3 4.3 1.6-4.3 1.6L8 13.9 6.4 9.6 2.1 8l4.3-1.6z",
 			warn: "M8 2.3l5.5 9.7H2.5zM8 6.1v2.9M8 10.6v.7",
+			tools: "M11.3 2.4a3 3 0 0 0-3.7 3.8L2.9 10.9a1.4 1.4 0 1 0 2 2l4.7-4.7a3 3 0 0 0 3.8-3.7l-1.8 1.8-1.7-.4-.4-1.7z",
 		};
 
 		/* Named components keep the call sites readable. */
@@ -137,6 +141,7 @@ window.__ModuleLoader__.load({
 		const IconRefreshOutlineRegular = (p) => h(Icon, { ...p, d: PATH.refresh });
 		const IconSkillOutlineRegular = (p) => h(Icon, { ...p, d: PATH.skill });
 		const IconWarningOutlineRegular = (p) => h(Icon, { ...p, d: PATH.warn });
+		const IconToolOutlineRegular = (p) => h(Icon, { ...p, d: PATH.tools });
 
 		/** Tone palette for {@link Tag}: the host's state colours, nothing else. */
 		const TAG_TONE = {
@@ -359,6 +364,7 @@ window.__ModuleLoader__.load({
 			IconRefreshOutlineRegular,
 			IconSkillOutlineRegular,
 			IconWarningOutlineRegular,
+			IconToolOutlineRegular,
 		};
 
 		/**
@@ -632,14 +638,28 @@ window.__ModuleLoader__.load({
 		 * @param connection - the client Connection service.
 		 * @returns the tool summary, or a diagnostic instead of a throw.
 		 */
-		async function readTools(connection) {
+		/**
+		 * Read the live tool registry from this plugin's own host half.
+		 *
+		 * The session id is what makes the answer *this* session's: the host
+		 * resolves that session's agent and reads `tools.schemas(agent)`, which is
+		 * the call the real tool executor makes, so `restrict()` masks and scoped
+		 * shadowing are applied exactly as they are for a model step. Without it the
+		 * host answers from the global view and labels the payload `scope: "global"`.
+		 * @param connection - the client Connection service (host tool route).
+		 * @param sessionId - session whose agent defines the viewing scope.
+		 * @returns the catalog, or a diagnostic instead of a throw.
+		 */
+		async function readTools(connection, sessionId) {
 			if (connection === void 0) return { error: "connection 服务未挂载" };
 			try {
 				// The same channel/endpoint pair `EVENTS_PATH` is built from.
 				// `rpc.call` composes `${channel}/${endpoint}` and slices the leading
 				// slash, so `API_CHANNEL` must keep it: "api" alone becomes "pi/..."
 				// and misses the route entirely.
-				const response = await connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, void 0);
+				const response = await connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {
+					sessionId,
+				});
 				if (!response.ok) {
 					return { error: `${response.error?.code ?? "unknown"}: ${response.error?.message ?? "连接失败"}` };
 				}
@@ -649,7 +669,16 @@ window.__ModuleLoader__.load({
 				if (value?.ok === false) {
 					return { error: typeof value.error === "string" ? value.error : "宿主读取工具清单失败" };
 				}
-				return { servers: value?.servers ?? [], totalTools: value?.totalTools ?? 0 };
+				return {
+					servers: value?.servers ?? [],
+					totalTools: value?.totalTools ?? 0,
+					// Non-MCP tools. The schemas carry no origin field, so this bucket
+					// means "not an MCP server's tool", not "ships with the Harness".
+					local: Array.isArray(value?.local) ? value.local : [],
+					// `agent` means restrictions applied; `global` means the host had no
+					// agent for this session and answered from the deployment catalog.
+					scope: value?.scope === "agent" ? "agent" : "global",
+				};
 			} catch (error) {
 				return { error: describeError(error) };
 			}
@@ -668,7 +697,7 @@ window.__ModuleLoader__.load({
 				readSkills(remote, sessionId),
 				readInventory(remote),
 				readBundles(remote),
-				readTools(connection),
+				readTools(connection, sessionId),
 			]);
 			const entries = inventory.snapshot?.entries ?? [];
 			return {
@@ -745,6 +774,33 @@ window.__ModuleLoader__.load({
 					{ tone: row.enabled ? (row.fiberPhase === "failed" ? "danger" : "success") : "quiet" },
 					`${state} · ${row.fiberPhase ?? "无状态"}`,
 				)),
+			);
+		}
+
+		/**
+		 * One non-MCP tool: its registered name only.
+		 *
+		 * Names, not schemas: the catalog's descriptions are kilobytes each (a
+		 * 15-tool plugin cost ~13.5 KB of schema), and the panel answers "what is
+		 * offered", not "what does each parameter mean". The tooltip keeps the full
+		 * name visible when the row is narrow.
+		 */
+		function ToolRow({ name }) {
+			return h(
+				"div",
+				{
+					title: name,
+					style: {
+						fontSize: 12,
+						padding: "4px 0",
+						borderBottom: "1px solid currentColor",
+						borderBottomColor: "color-mix(in srgb, currentColor 10%, transparent)",
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+						whiteSpace: "nowrap",
+					},
+				},
+				name,
 			);
 		}
 
@@ -1105,6 +1161,71 @@ window.__ModuleLoader__.load({
 				);
 			};
 
+			// The third mark: how many tools the model is actually offered. The browser
+			// cannot see the registry, so this number arrives with the same payload as
+			// the MCP half — and it is the total, not the MCP subset, which is what
+			// makes "28 MCP tools out of 40 total" readable at a glance.
+			const renderToolsChip = () => {
+				const tools = payload?.tools;
+				let body;
+				if (payload === void 0) body = h("span", MUTED, "…");
+				else if (tools?.error !== void 0)
+					body = h(
+						"span",
+						{ style: { fontSize: 11, color: "var(--dsw-alias-state-error-primary)" } },
+						"读取失败",
+					);
+				else body = h("span", COUNT, String(tools?.totalTools ?? 0));
+				return h(
+					"span",
+					{ style: { display: "flex", alignItems: "center", gap: 3, minWidth: 0 } },
+					h(ui.IconToolOutlineRegular, { size: 12 }),
+					h("span", { style: { fontSize: 11, opacity: 0.7 } }, "tools"),
+					body,
+				);
+			};
+
+			const toolsSection = (() => {
+				if (!open || payload === void 0) return null;
+				const tools = payload.tools;
+				const local = tools?.local ?? [];
+				const failed = tools?.error !== void 0;
+				return h(
+					"div",
+					null,
+					h(GroupHeading, {
+						icon: h(ui.IconToolOutlineRegular, { size: 13 }),
+						name: "工具",
+						count: failed ? void 0 : tools?.totalTools,
+						// Which view answered, stated rather than implied: an `agent` scope
+						// has restrictions applied, a `global` one describes the
+						// deployment and may over-report what this session's model sees.
+						note: failed
+							? "读取失败"
+							: tools?.scope === "agent"
+								? "本会话 agent 可见"
+								: "全局注册（未取到本会话 agent）",
+					}),
+					failed
+						? h(
+								"div",
+								{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+								`工具清单读取失败：${tools.error}`,
+							)
+						: local.length === 0
+							? h(
+									"div",
+									{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+									"除 MCP 工具外没有注册工具。",
+								)
+							: h(
+									"div",
+									{ style: { display: "flex", flexDirection: "column" } },
+									local.map((name) => h(ToolRow, { key: name, name })),
+								),
+				);
+			})();
+
 			const skillsSection = (() => {
 				// Collapsed, these trees are never mounted, and the dock re-renders on
 				// every composer keystroke: skip the work instead of building it unused.
@@ -1353,6 +1474,8 @@ window.__ModuleLoader__.load({
 					renderSkillChip(),
 					h("span", { style: { height: 10, display: "flex" } }, h(Divider, { vertical: true })),
 					renderMcpChip(),
+					h("span", { style: { height: 10, display: "flex" } }, h(Divider, { vertical: true })),
+					renderToolsChip(),
 					// Only present while the stream is dead, so the healthy row keeps the
 					// width it was measured at: zero cost when nothing is wrong, and an
 					// 11 px mark instead of a silent freeze when something is.
@@ -1396,6 +1519,8 @@ window.__ModuleLoader__.load({
 									h("div", { key: "s1", style: { height: 10 } }),
 									h("div", { key: "mcp" }, mcpSection),
 									h("div", { key: "s2", style: { height: 10 } }),
+									h("div", { key: "tools" }, toolsSection),
+									h("div", { key: "s3", style: { height: 10 } }),
 									h("div", { key: "bundles" }, bundlesSection),
 								],
 							}),

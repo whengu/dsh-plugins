@@ -18,6 +18,7 @@ import {
 	readToolSummary,
 	splitMcpToolName,
 	summarizeMcpTools,
+	summarizeTools,
 } from "../lib/index.js";
 
 const problems = [];
@@ -74,6 +75,92 @@ const failedSummary = readToolSummary({
 check(failedSummary.ok === false, "a throwing registry must report failure");
 check(failedSummary.error === "registry exploded", "the failure must carry the real message");
 
+// --- summarizeTools: the MCP half plus everything else ---------------------
+// The bucket is named `local` and NOT "built-in": schemas carry no origin field,
+// so a plugin's tool and a shipped tool are indistinguishable. The check pins the
+// only distinction that is actually observable — MCP server tool vs not.
+const catalog = [
+	{ name: "mcp__local__read_file" },
+	{ name: "read" },
+	{ name: "bash" },
+	{ name: "mcp__remote__search" },
+	{ name: "read_img" },
+];
+const splitCatalog = summarizeTools(catalog);
+check(splitCatalog.servers.length === 2, "the MCP half must still be grouped per server");
+check(
+	JSON.stringify(splitCatalog.local) === JSON.stringify(["bash", "read", "read_img"]),
+	`every non-MCP tool must land in local, sorted, saw ${JSON.stringify(splitCatalog.local)}`,
+);
+check(
+	splitCatalog.local.every((entry) => !entry.startsWith("mcp__")),
+	"no MCP tool name may leak into the local bucket",
+);
+check(summarizeTools([]).local.length === 0, "an empty catalog has no local tools");
+check(summarizeTools(undefined).local.length === 0, "a missing catalog has no local tools");
+check(
+	summarizeTools([{ name: "" }, { name: 42 }, {}, { name: void 0 }]).local.length === 0,
+	"malformed entries must never become tool names",
+);
+
+// --- the viewing scope: the agent when a session resolves, global otherwise --
+// `tools.schemas(agent)` is the call the real executor makes, so an argument of
+// anything other than the agent object would silently read the global view.
+const fakeAgent = { id: "session-1" };
+const agentRegistry = { get: (id) => (id === "session-1" ? fakeAgent : void 0) };
+/** A ctx whose `schemas` records the scope it was called with. */
+const scopeRecorder = () => {
+	const seen = [];
+	return {
+		seen,
+		ctx: {
+			get: (service) => (service === "agents" ? agentRegistry : void 0),
+			tools: {
+				schemas(scope) {
+					seen.push(scope);
+					// The agent view is deliberately smaller: a restriction removed one.
+					return scope === void 0
+						? [{ name: "read" }, { name: "bash" }]
+						: [{ name: "read" }];
+				},
+			},
+		},
+	};
+};
+{
+	const { ctx, seen } = scopeRecorder();
+	const scoped = readToolSummary(ctx, "session-1");
+	check(scoped.ok === true && scoped.scope === "agent", "a resolved session must answer from its agent scope");
+	check(seen[0] === fakeAgent, "the viewing scope must be the agent object, not its id or its ctx");
+	check(scoped.totalTools === 1, "the agent view must be the one that is counted");
+}
+{
+	const { ctx, seen } = scopeRecorder();
+	const unknown = readToolSummary(ctx, "no-such-session");
+	check(unknown.scope === "global", "an unknown session must fall back to the global view");
+	check(seen[0] === void 0, "the global read must pass no scope at all");
+	check(unknown.totalTools === 2, "the global view must report the full catalog");
+}
+{
+	const { ctx, seen } = scopeRecorder();
+	check(readToolSummary(ctx).scope === "global", "no session id must mean the global view");
+	check(seen[0] === void 0, "no session id must pass no scope");
+}
+{
+	// A profile without the agent service still renders a catalog instead of failing.
+	const degraded = readToolSummary(
+		{
+			get() {
+				throw new Error("agents unavailable");
+			},
+			tools: { schemas: () => [{ name: "read" }] },
+		},
+		"session-1",
+	);
+	check(degraded.ok === true, "a throwing agents lookup must not become a read failure");
+	check(degraded.scope === "global", "a throwing agents lookup must degrade to the global view, and say so");
+}
+
 // --- createToolSummaryReader: one listener, two jobs -----------------------
 // The cache invalidation and the browser's change signal are the same fact, so
 // they must come from ONE `tools/change` subscription. This pins that: subscribers
@@ -122,12 +209,25 @@ const disposed = [];
 // must not run it at all.
 let schemasCalls = 0;
 const changeListeners = [];
+/** The agent the route-level scope test resolves; identity is what is asserted. */
+const routeAgent = { id: "session-1" };
+/** Arguments `schemas()` was called with, in order: proves which scope was used. */
+const schemasScopes = [];
 const fakeCtx = {
   tools: {
-    schemas: () => {
+    schemas: (scope) => {
       schemasCalls += 1;
+      schemasScopes.push(scope);
       return [{ name: "mcp__local__read_file" }];
     },
+  },
+  /**
+   * The agent service, looked up by name the way `readToolSummary` does it.
+   * Returning a registry here is what lets the route test prove that a session id
+   * travels through the host and turns into the viewing scope.
+   */
+  get(service) {
+    return service === "agents" ? { get: (id) => (id === "session-1" ? routeAgent : void 0) } : void 0;
   },
   on(event, listener) {
     if (event === "tools/change") changeListeners.push(listener);
@@ -234,6 +334,59 @@ check(changeListeners.length === 1, "apply must subscribe to tools/change exactl
 changeListeners[0]();
 await readSummary("rpc-3");
 check(schemasCalls === 2, `a tools/change must invalidate the cache, saw ${schemasCalls} calls`);
+
+// --- the viewing scope travels through the route --------------------------
+/** Same route, with an explicit payload (the session scope travels inside it). */
+async function readSummaryWith(payload) {
+	return summaryRoute.fetch(
+		new Request("http://localhost" + summaryRoute.path, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ type: "client-request", rpcId: "rpc-scope", payload }),
+		}),
+	);
+}
+
+/** Invalidate, read with this payload, and report the scope that reached `schemas()`. */
+async function scopeForPayload(payload) {
+	changeListeners[0]();
+	await readSummaryWith(payload);
+	return schemasScopes[schemasScopes.length - 1];
+}
+
+check(
+	(await scopeForPayload({ sessionId: "session-1" })) === routeAgent,
+	"a session id must travel through the route and become the viewing scope",
+);
+check(
+	(await scopeForPayload({ sessionId: "nobody" })) === void 0,
+	"an unknown session must be read from the global view",
+);
+check(
+	(await scopeForPayload({ action: "tools", data: null })) === void 0,
+	"a payload without a session id must stay global",
+);
+
+// The answer names the view it served, so a degraded answer is visible in the UI
+// instead of being mistaken for "this session really sees that many tools".
+changeListeners[0]();
+const scopedEnvelope = await readSummaryWith({ sessionId: "session-1" });
+const scopedValue = (await scopedEnvelope.json()).result.value;
+check(scopedValue.scope === "agent", "the payload must say which view produced the answer");
+
+// --- the cache is per viewing scope, never shared across sessions ---------
+// Two tabs on two sessions can see different sets once `restrict()` is in play,
+// so one cached answer must not be served to both.
+changeListeners[0]();
+const callsBefore = schemasCalls;
+await readSummaryWith({ sessionId: "session-a" });
+await readSummaryWith({ sessionId: "session-b" });
+check(
+	schemasCalls === callsBefore + 2,
+	`two sessions must not share one cached answer, saw ${schemasCalls - callsBefore} reads`,
+);
+await readSummaryWith({ sessionId: "session-a" });
+check(schemasCalls === callsBefore + 2, "a repeat read from the same session must be cached");
 
 // --- the change stream ----------------------------------------------------
 // Decode one SSE frame. `EventSource` ignores comment lines, so the stream opens

@@ -13,17 +13,15 @@
 **已证实的效果**：页面实测收起态 `skill | 22 | MCP | 29`，明细展开/收起、29 个工具名列出、MCP 故障弹窗触发与关闭均实测通过（2026-10-28）。
 
 ## 2. 当前状态快照
-
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile：**0.4.0 已打包并装入**（2026-11-09，`dsh plugin add ./dist/dsh-ability-strip-0.4.0.tgz`，0.3.0→0.4.0）；0.3.0 的 tgz 仍在 `dist/` 未覆盖，可回滚 |
-| 源码 | 0.4.0（定时轮询 → 变更推送），`pnpm check` 三项全 PASS；`verify-pack` PASS |
-| **宿主半边生效状态** | ⚠️ **未生效**：装入后硬刷新，客户端已是 0.4.0（琥珀"变更推送已断开"标出现，证明错误路径正常），但新增的 `GET /api/ability-strip/events` 仍 **404**，旧的 `POST /api/ability-strip` 正常 200 → **宿主进程仍在跑 0.3.0 模块，需重启 Host 才激活推送**（ESM 缓存，`dsh-hmr` 不重新求值宿主模块） |
-| 装载 | 已进 `dsh.profile.bundles`；`LinkType` 为空；安装副本 `lib/client.js`/`lib/index.js` 哈希与源码逐字节一致；`why` = 0.4.0；`dump-config` 无 skipping |
-| 页面验证 | 0.3.0：收起/展开/明细/故障弹窗全过（2026-10-28）。0.4.0：客户端侧已验（渲染 `skill 22 / MCP 28`、`pushLost` 警示标按设计出现）；**推送主路径未验**（等宿主重启） |
-| 静态评审 | 两轮 × 2 评审 + 本轮 subagent 实现与主 agent 独立复核（发现并修复 2 处：`EventSource` 无 error 处理、宿主 `send()` catch 泄漏） |
-| 版本管理 | 原独立仓库 GitHub `whengu/dsh-ability-strip`（`7e228a0..4b6551c`）；2026-11-03 解散 `.git` 并入单仓库，2026-11-04 复用该仓库作远程（旧提交保留在合并历史中）并更名为 `whengu/dsh-plugins` |
-| 待办 | **重启 Host 后**按 §6 验证变化流（重点：Network 里出现 `eventsource`、静置无周期请求、断/连 MCP 即时反映） |
+| 安装 | `web` profile：**0.6.0**（0.3.0 → 0.4.0 → 0.5.0 → 0.6.0，均以 `dsh plugin add <tarball>` 装入） |
+| 源码 | 0.6.0：0.4.0 的变更推送 + 0.5.0 的本地 UI kit（不加载 Harness Client 包）+ 0.6.0 的 **tools 标记**（按本会话 agent 读工具面） |
+| 宿主半边生效状态 | **0.4.0 与 0.5.0 均已真机确认生效**（0.4.0 重启后 `GET /api/ability-strip/events` = 200 + `text/event-stream`；0.5.0 宿主未改故无需重启）。**0.6.0 新增的 `local` / `scope` 字段需重启 Host 才生效** |
+| 装载 | 已进 `dsh.profile.bundles`；`LinkType` 为空；安装副本与源码内容一致（按换行归一比对）；`why` 有记录 |
+| 页面验证 | 0.3.0：收起/展开/明细/故障弹窗全过（2026-10-28）。0.4.0：推送主路径已验（首帧 `{"version":0}`、20 秒空闲零请求、断线警示标真实出现）。0.5.0：自绘 svg 与面板视觉已验。**0.6.0：客户端可验（tools 计数来自旧宿主也能显示）；非 MCP 清单与 scope 标注需重启后验** |
+| 静态评审 | 多轮：两轮 × 2 评审 + subagent 实现与主 agent 独立复核 + 0.5.0/0.6.0 的变异验证（scope 忽略 sessionId → 5 条断言红；scope 标注改为恒 global → 1 条红） |
+| 待办 | 重启 Host 后确认 0.6.0 的 tools 面板：标题右侧应显示"本会话 agent 可见"，且非 MCP 工具名清单非空 |
 
 ## 3. 资产地图（哈希为 SHA256 前 16 位，迁移时点快照）
 
@@ -197,6 +195,7 @@ DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.
 | 2026-11-09 | **0.4.0 装机 + 发现宿主不热重载** | 打包（`verify-pack` PASS）→ `dsh plugin add ./dist/…-0.4.0.tgz` → 硬刷新。**客户端 0.4.0 生效**：渲染 `skill 22 / MCP 28`，并因推送未通而正确显示琥珀警示标（**这是修复 (1) 的真机验证**）。**宿主半边未生效**：`GET /api/ability-strip/events` 返回 404，而 `POST /api/ability-strip` 正常 200 且带真实数据。定位：Loader 用普通 `import()`，同一 specifier 命中 Node ESM 缓存；`dsh-hmr` 只监视 patch/清单并重组层，**不重新求值宿主模块**。结论：**宿主半边改动必须重启 Host**（我此前在 INSTALL.md/README 写的"Host 不需要重启"是错的，已全仓纠正，并给出"探测只有新代码才有的路由"这个判别法） |
 | 2026-11-09 | **查官方口径（结论：方向对，另有三处偏离）** | 用户质疑"DSH 大多数东西都热重载，是不是走错方向"。找到随包安装的官方 skill `dsh-agent-preset/skills/cordis-plugin-development/`，其 `references/host-plugin.md` 明文：**"Installing a new bundle can activate through HMR; replacing an installed package requires restart to load a fresh JavaScript module generation."** → 重启要求是官方规则，非我方判断失误。`references/practices.md` 亦明文 **"Do not poll"** / "Wait on durable events"，故"轮询→事件推送"方向与官方一致。同时发现三处偏离：**(1) 客户端 require `ui-primitives` 被官方明文禁止（技术债，见 §7.5）**；(2) 安装入口应为 `plugin_manager install_bundle`（我们用的是 `dsh plugin add`，拿不到 `restart-required`）；(3) 官方本地开发用目录安装（= 链接），本仓库为发布隔离而禁用。已全部写入仓库根 `INSTALL.md` §15 |
 | 2026-11-09 | **0.5.0 偿还 §7.5 债 1：剥离 primitives 依赖** | 用户要求"处理技术债和质量问题，范围全仓库"。做法：在 `lib/client.js` 内实现本地 UI kit（Icon/Tag/Button/Modal + 10 条图标 path），色彩只用真机读出来的 `--dsw-alias-*`；`require` 面从 `["react","react-dom","@deepseek-ai/dsh-client-ui-primitives"]` 收敛到 `["react","react-dom"]`。**宿主半边一字未改**（`lib/index.js` 归一化哈希仍为 `E3E8BDD6FBB46C92`），所以本次装机不需要重启 Host，硬刷新即可。附带修掉两个真 bug：①`Icon` 吞掉调用点传的 `style`（彩色故障图标会退回继承色）；②`check-render` 的 `createElement` 不像 React 那样写 `props.children`，换成按 React 契约解构 children 的组件后会静默丢文本。两处都补了断言并做变异验证。 |
+| 2026-11-09 | **0.6.0 新增 tools 标记：回答「dsh 向 agent 暴露了哪些工具」** | 用户问能否用插件呈现"dsh 向 agent 暴露了哪些工具"，并问能否和 MCP 合到一起。**能，且合到本插件最合适**——它本来就在读工具注册表。查证结论：① 浏览器侧**没有** tools 版 Remote（`dsh-api-remotes` 里无对应命名空间），所以必须改宿主半边；② `ctx.tools.schemas(scope)` 的 scope 要传 **Agent 对象**（`dsh-tool-executor-ptc` 用 `schemas(exec.agent, exec.toolSet)`、`dsh-tool-cordis` 用 `schemas(context.agent)`），省略则是全局视图；③ `Agents.get(id)` 的入参正是 shared agent/session id，所以会话 id 能解析到 agent。实现：路由开始接收 `payload.sessionId`（此前丢弃），宿主按 `schemas(agent)` 读并在负载里加 `scope`（agent/global）与 `local`（非 MCP 工具名）；reader 缓存改为**按 sessionId 分键**（不同 agent 的 restriction 不同，不能互相喂答案）；客户端新增第三个标记 `tools`（总数）与面板「工具」分区。两条边界如实写进 README：不含按步准入（未传 toolSet）、`local` 不等于"内置"（schema 无来源字段）。变异验证：忽略 sessionId → 5 条断言红；scope 标注恒为 global → 1 条红。**0.6.0 的宿主字段需重启 Host 才生效。** |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

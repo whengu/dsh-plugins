@@ -108,21 +108,85 @@ export function summarizeMcpTools(schemas) {
 }
 
 /**
+ * Split one catalog into its MCP half and everything else.
+ *
+ * "Everything else" is deliberately called `local` rather than "built-in": the
+ * schemas carry no origin field, so a tool registered by a plugin and one
+ * shipped with the Harness are indistinguishable here. Naming the bucket after
+ * what is actually known (not an MCP server) avoids inventing a distinction the
+ * registry does not expose.
+ * @param schemas - model-facing tool schemas from `ctx.tools.schemas(...)`.
+ * @returns per-server MCP tools plus the sorted non-MCP tool names.
+ */
+export function summarizeTools(schemas) {
+	/** @type {string[]} */
+	const local = [];
+	for (const schema of Array.isArray(schemas) ? schemas : []) {
+		const name = schema?.name;
+		if (typeof name !== "string" || name.length === 0) continue;
+		// A name that parses as an MCP tool belongs to a server, not to `local`.
+		if (splitMcpToolName(name) !== void 0) continue;
+		local.push(name);
+	}
+	return { servers: summarizeMcpTools(schemas), local: local.sort() };
+}
+
+/**
+ * Resolve the Agent a session id names, so the catalog can be read from that
+ * agent's point of view.
+ *
+ * `ctx.tools.schemas(agent)` is what the real executors use
+ * (`dsh-tool-executor-ptc`: `tools.schemas(exec.agent, exec.toolSet)`,
+ * `dsh-tool-cordis`: `ctx.tools.schemas(context.agent)`), and passing the agent
+ * is what applies `ctx.tools.restrict()` masks and scoped shadowing. Omitting it
+ * yields the global view, which is what a caller with no session gets.
+ *
+ * `agents` is read through `ctx.get` rather than added to `inject`: a profile
+ * without the agent service should still render the global catalog instead of
+ * leaving this row inactive.
+ * @param ctx - Host context.
+ * @param sessionId - the session whose agent should be the viewing scope.
+ * @returns the live agent, or undefined for the global view.
+ */
+function resolveAgent(ctx, sessionId) {
+	if (typeof sessionId !== "string" || sessionId.length === 0) return void 0;
+	try {
+		return ctx.get?.("agents")?.get?.(sessionId);
+	} catch {
+		// A throwing lookup degrades to the global view; the payload says which
+		// view it served, so a degraded answer is visible rather than silent.
+		return void 0;
+	}
+}
+
+/**
  * Read the live tool registry and summarize it.
  *
  * Never throws: a registry read failure becomes `error`, so the browser can state
  * the failure instead of silently reporting "no MCP tools".
  * @param ctx - Host context providing `tools`.
+ * @param sessionId - optional session whose agent defines the viewing scope.
  * @returns the summary, or a diagnostic instead of a throw.
  */
-export function readToolSummary(ctx) {
+export function readToolSummary(ctx, sessionId) {
 	try {
-		const schemas = ctx.tools.schemas();
-		const servers = summarizeMcpTools(schemas);
+		const agent = resolveAgent(ctx, sessionId);
+		// Omitting the scope is the documented global view; passing the agent is
+		// the same call the tool executor makes for a real model step.
+		const schemas = agent === void 0 ? ctx.tools.schemas() : ctx.tools.schemas(agent);
+		const { servers, local } = summarizeTools(schemas);
 		return {
 			ok: true,
+			/**
+			 * Which view answered. `agent` means restrictions and scoped shadowing
+			 * were applied; `global` means the session's agent was not available
+			 * (no session id, or no live agent for it), so the answer describes the
+			 * deployment's registered catalog instead.
+			 */
+			scope: agent === void 0 ? "global" : "agent",
 			totalTools: Array.isArray(schemas) ? schemas.length : 0,
 			servers,
+			local,
 			readAt: new Date().toISOString(),
 		};
 	} catch (error) {
@@ -147,13 +211,25 @@ export function readToolSummary(ctx) {
  * @returns the current summary reader, its change subscriptions, and its disposer.
  */
 export function createToolSummaryReader(ctx) {
-	let cached;
+	/**
+	 * One cached answer per viewing scope, keyed by session id.
+	 *
+	 * The answer is scope-dependent: `schemas(agent)` applies that agent's
+	 * restrictions while the global view does not, so a single slot would serve one
+	 * tab's answer to another tab whose agent sees a different set. The empty string
+	 * keys the global view (a caller with no session id).
+	 * @type {Map<string, object>}
+	 */
+	let cached = new Map();
 	/** Bumped once per `tools/change`; read by the event stream, never by a read. */
 	let version = 0;
 	/** Open change streams (one per browser tab) waiting for the next bump. */
 	const listeners = new Set();
 	const invalidate = () => {
-		cached = void 0;
+		// Every cached scope goes together: `tools/change` fires on registration,
+		// unregistration, and scoped restriction alike, and this listener cannot
+		// tell which agent moved. Dropping the whole map is the cheap exact answer.
+		cached.clear();
 		version += 1;
 		// A copy, so a listener that detaches while being notified cannot disturb
 		// the set being walked.
@@ -161,13 +237,15 @@ export function createToolSummaryReader(ctx) {
 	};
 	const off = ctx.on("tools/change", invalidate);
 	return {
-		read() {
+		read(sessionId) {
 			// Cache only successful reads. A transient failure (registry not yet
 			// ready, a momentary error) must not stick: the next read should retry,
 			// not keep serving the stale error until the next `tools/change`.
-			if (cached !== void 0) return cached;
-			const result = readToolSummary(ctx);
-			if (result.ok) cached = result;
+			const key = typeof sessionId === "string" ? sessionId : "";
+			const hit = cached.get(key);
+			if (hit !== void 0) return hit;
+			const result = readToolSummary(ctx, sessionId);
+			if (result.ok) cached.set(key, result);
 			return result;
 		},
 		/**
@@ -243,7 +321,11 @@ export function apply(ctx) {
 				// become a 500 the browser would report as a transport failure.
 				let result;
 				try {
-					result = { ok: true, value: reader.read() };
+					// The browser sends the session it is displaying, so the catalog is
+					// read from that session's agent (restrictions applied). Without it
+					// the answer is the deployment's global view and says so.
+					const sessionId = envelope.payload?.sessionId;
+					result = { ok: true, value: reader.read(sessionId) };
 				} catch (error) {
 					result = {
 						ok: false,
@@ -391,5 +473,8 @@ async function readClientRequest(request) {
 		return void 0;
 	}
 	if (body?.type !== "client-request" || typeof body.rpcId !== "string") return void 0;
-	return { rpcId: body.rpcId };
+	// The payload carries the caller's arguments (`rpc.call(channel, endpoint, payload)`).
+	// The answer route only uses it to name the viewing session, but it is passed
+	// through intact so the shape stays the carrier's, not a private convention.
+	return { rpcId: body.rpcId, payload: body.payload };
 }

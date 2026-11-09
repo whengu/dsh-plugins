@@ -384,8 +384,14 @@ const payloadOk = {
   ] },
   inventory: { snapshot: { entries: [mcpEntry, resourcesEntry] } },
   bundles: { bundles: [{ name: "dsh-base", enabled: true, version: "0.2.1-rc.2", rows: [1, 2] }] },
-  // What the host half reports: `local` connected with two registered tools.
-  tools: { servers: [{ server: "local", tools: ["read_file", "write_file"] }], totalTools: 5 },
+  // What the host half reports: `local` connected with two registered tools, plus
+  // three non-MCP tools. 2 + 3 = 5 keeps `totalTools` honest against the buckets.
+  tools: {
+    servers: [{ server: "local", tools: ["read_file", "write_file"] }],
+    totalTools: 5,
+    local: ["bash", "read", "read_img"],
+    scope: "agent",
+  },
   mcpRows: [mcpEntry],
   mcpResources: resourcesEntry,
   loadedAt: "12:00:00",
@@ -397,7 +403,7 @@ const payloadNoResources = { ...payloadOk, inventory: { snapshot: { entries: [mc
 // absent from the registry. This is the case 有/无 must get right.
 const payloadDisconnected = {
   ...payloadOk,
-  tools: { servers: [], totalTools: 3 },
+  tools: { servers: [], totalTools: 3, local: ["bash", "read", "read_img"], scope: "global" },
 };
 const okProps = { sessionId: "s1", load: async () => payloadOk };
 const disconnectedProps = { sessionId: "s1", load: async () => payloadDisconnected };
@@ -427,6 +433,10 @@ check(!text.includes("…"), "no placeholder once data arrived");
 check(!text.includes("已连接"), "the chip must not repeat the icon state as text");
 check(!text.includes("未连接"), "a connected server must not read 未连接");
 check(!has(text, "已启用 · "), "the collapsed row must not print Loader phases");
+// The third mark: total tools offered, which is the whole point of asking "what
+// does the model actually get". It must not be the MCP subset repeated.
+check(has(text, "tools"), "the row must label the tools mark");
+check(text.includes("5"), "the tools mark must show the total, not the MCP subset");
 // Collapsed must not build the detail trees: they are skipped for cost, since the
 // dock re-renders on every composer keystroke.
 check(!has(text, "插件包"), "collapsed must not build the bundles section");
@@ -463,6 +473,13 @@ check(has(text, "code-review"), "expanded must list every skill");
 check(text.includes("dsh-base"), "expanded must list bundle names");
 check(text.includes("插件包"), "bundles group must have its own heading");
 check(text.includes("技能") && text.includes("MCP"), "both group headings present in the detail");
+check(text.includes("工具"), "the tools group must have its own heading");
+check(has(text, "read_img"), "the detail must list non-MCP tool names");
+check(has(text, "bash"), "every non-MCP tool must be listed, not only the interesting ones");
+check(
+  has(text, "本会话 agent 可见"),
+  "an agent-scoped answer must say so, because that is the answer with restrictions applied",
+);
 check(has(text, "资源工具：已挂载"), "the resource plugin must be stated when mounted");
 check(findButton(tree, "刷新能力信息") !== undefined, "the detail must offer a refresh control");
 // It is mounted once for all servers, so it must never render as a server row:

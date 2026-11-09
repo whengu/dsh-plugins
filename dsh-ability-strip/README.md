@@ -2,14 +2,38 @@
 
 > **AI 编写声明（如实披露）**：本插件的全部代码与文档由 AI 编写（DeepSeek 的 AI 编程智能体，在 DeepSeek Harness 会话中完成）。人类角色是需求方与评审验收方：提出需求、纠正设计、把关 code review、做最终验收和安装决策；代码本身没有人类手写的行。对 AI 生成代码有顾虑的使用者请知悉后再用。
 
-DeepSeek Harness（dsh）Web GUI 输入框下方的**只读**能力条——挂在输入栏自己的 dock 里，和 persona 条同一排。它回答一个 GUI 默认看不见的问题：*这个会话到底有什么可用？*——用两个互相独立的标记回答：
+DeepSeek Harness（dsh）Web GUI 输入框下方的**只读**能力条——挂在输入栏自己的 dock 里，和 persona 条同一排。它回答一个 GUI 默认看不见的问题：*这个会话到底有什么可用？*——用三个互相独立的标记回答：
 
 | 标记 | 数据来源 | 收起时的回答 |
 | --- | --- | --- |
 | **skill** | `skills/list`（浏览器 Remote） | 本会话可见的可调用 skill 数量 |
-| **MCP** | `ctx.tools.schemas()`（本包的宿主半边） | 有工具注册时显示工具总数；否则 显示 连接故障 / 未连接 / 读取失败 |
+| **MCP** | `ctx.tools.schemas()`（本包的宿主半边） | 有工具注册时显示 MCP 工具总数；否则 显示 连接故障 / 未连接 / 读取失败 |
+| **tools** | 同上（同一次读取） | 模型**总共**被提供多少工具（含 MCP）；MCP 是其中一部分 |
 
-点击这一行（`role="button"`，就是 skill/MCP 区域本身，没有单独的展开图标）展开**浮动**明细面板（fixed，portal 到 `<body>`，永不推挤页面）：列出每个 skill 的 `/name`、`model+user` / `user-only`、描述和 `whenToUse`；每个**已连接** MCP 服务器的工具数量和工具名称；已配置的 MCP Loader 行单独列出，带各自的 phase；`dsh-mcp-resources` 是否挂载；以及 profile 启用的插件包。刷新和关闭在面板头部；Escape 或点击面板外任意位置关闭。
+点击这一行（`role="button"`，就是 skill/MCP/tools 区域本身，没有单独的展开图标）展开**浮动**明细面板（fixed，portal 到 `<body>`，永不推挤页面）：列出每个 skill 的 `/name`、`model+user` / `user-only`、描述和 `whenToUse`；每个**已连接** MCP 服务器的工具数量和工具名称；**非 MCP 工具的名字清单**（标出这份清单是按本会话 agent 还是全局注册读的）；已配置的 MCP Loader 行单独列出，带各自的 phase；`dsh-mcp-resources` 是否挂载；以及 profile 启用的插件包。刷新和关闭在面板头部；Escape 或点击面板外任意位置关闭。
+
+## tools 标记：模型实际拿到的工具面
+
+`MCP` 只回答"MCP 通不通"，回答不了"模型手里一共有多少工具"。后者才是容量问题的来源：
+一个插件可以注册十几个工具，每个几百到上千字节 schema，全部进系统提示。
+
+这条标记的数字来自宿主半边的同一次读取，但**读法不同**——它按**本会话的 agent** 读：
+
+```js
+const agent = ctx.get("agents").get(sessionId)   // 该会话的存活 agent
+ctx.tools.schemas(agent)                         // 与真实 executor 完全相同的调用
+```
+
+`tools.schemas(agent)` 正是 `dsh-tool-executor-ptc`（`tools.schemas(exec.agent, exec.toolSet)`）和
+`dsh-tool-cordis`（`ctx.tools.schemas(context.agent)`）在真实模型步骤里用的调用，所以
+`ctx.tools.restrict()` 的按 agent 削减、以及 scoped 注册对全局工具的遮蔽，都会如实反映出来。
+省略 scope 拿到的是**全局视图**（部署注册了什么），面板据此在标题右侧写清是"本会话 agent 可见"
+还是"全局注册（未取到本会话 agent）"——不猜，也不把降级结果伪装成准确结果。
+
+**如实说明两个边界**：
+
+- `schemas(agent)` 不含**按步**准入（`toolSet`），所以它是"这个 agent 被提供什么"，不是"某一步真放行了什么"。后者要一次真实步骤才有意义。
+- 非 MCP 那一桶叫 `local` 而不是"内置"：schema 里没有来源字段，插件注册的工具和 Harness 自带的工具在这里无法区分。名字按**已知事实**取（不是 MCP 服务器的），不发明区分度。
 
 ## MCP 的"已连接"判断是真实的，且会自己变
 
@@ -102,6 +126,8 @@ wire:     text/event-stream, 每帧形如 `data: {"version":N}`
 - **没有连接细节。** 服务器真失败时，原因不在注册表里——它去了 Host 日志。能力条说不出为什么。
 - **推送通道占一条浏览器连接。** 每个页面持有一条常开的 SSE 请求（HTTP/1.1 同一 origin 上限 6 条）。空闲时不发数据，但这条槽位是占着的。DSH 自己的客户端 HMR 也用同样的做法。
 - **自带控件，只用 theme token。** 0.5.0 起本插件的浏览器半边**不加载任何 Harness Client 包**（此前 `require` 了 `@deepseek-ai/dsh-client-ui-primitives`，那是 DSH 官方 skill `cordis-plugin-development` 里 `references/practices.md` 明文禁止的做法）。按钮、状态标签、弹窗、图标全部是本 bundle 自己的实现，色彩只引用 `--dsw-alias-*` 主题变量。代价是这些控件的外观不随宿主升级自动演进；收益是宿主把那些包改名、合并、删掉时本插件不会跟着变空白。
+- **tools 标记可能是全局视图。** 它按本会话 agent 读（`tools.schemas(agent)`）；但如果该会话暂时没有存活 agent（宿主查不到），会退回全局视图并在面板里写明"全局注册（未取到本会话 agent）"。全局视图**不含** `ctx.tools.restrict()` 的按 agent 削减，所以数字可能比模型实际看到的多。
+- **tools 计数不含按步准入。** `schemas(agent)` 没有传 `toolSet`，所以它是"这个 agent 被提供什么"，不是"某一步真放行了什么"。后者只有真实步骤内部才知道。
 
 Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`——**没有配置**——所以配置里的 `serverName` 从 inventory 拿不到。已连接的服务器改从工具注册表取名，面板才叫得出它们；Loader 行保留自己的行 id（本机是 `mcp-local`）。
 
@@ -244,9 +270,11 @@ pnpm check                               # 前三项一起
 ## 验证状态
 
 - `pnpm check`（check-host / check-bundle-contract / check-render）在当前树上全部通过（跑一遍，输出就是证据）。
-- **0.4.0 的推送机制只做了源码级与检查级验证，没有真机验证**（本轮禁止安装/部署）：变更流在真实浏览器里的行为——`EventSource` 连上、帧到达后重读、掉线自动重连——需要在装好之后按下面几步确认。
+- **0.4.0 的推送机制已在真机上验证**（2026-11-09，重启 Host 后）：`GET /api/ability-strip/events` 返回 200 + `text/event-stream`；页面内 `EventSource` 连上并收到首帧 `{"version":0}`；空闲 20 秒**零请求**（旧版每 15 秒一次）；推送断开时琥珀警示标真实出现（那次 404 恰好提供了真实故障场景）。
+- **0.5.0（剥离 primitives）已在真机上验证**：装 0.5.0 后硬刷新，自绘 3 个 svg 正常渲染（`stroke` 计算值 = `--dsw-alias-label-primary`），面板布局与 tag 对齐正常、刷新按钮确实发出请求，20 秒空闲零请求，源码零 `setInterval`/`setTimeout`。宿主半边未改，故当时无需重启。
+- **0.6.0（tools 标记）待重启 Host 后才能真机验证宿主半边**：新增的 `local` / `scope` 字段由宿主产出，替换已安装包的宿主 JS 必须重启（INSTALL.md §15.1）。客户端半边硬刷新即可，且在旧宿主下 `totalTools` 仍能正确显示——只是非 MCP 清单会空、scope 会显示"全局注册"。
 - 变异矩阵（0.4.0 本轮实测，19 条，每条都确认检查会失败并逐条还原到字节一致）：去掉隐藏标签页护栏、去掉 `samePayload` 抑制、去掉 in-flight 闩、去掉"打开面板即读"、去掉卸载时关流、重新加回 15 秒 `setInterval`、让变更流去读注册表、去掉宿主 unload 关流、重命名宿主路由名、只改浏览器侧路由名、去掉宿主 abort 监听、**去掉 `error` 监听、去掉"一次故障只补读一次"这层闸、不重置这道闸、去掉"切回标签页重开死流"、把重开改成无条件重开（会重复开流）、去掉拆除时的 `detach`、去掉拆除时对 unload 集合的删除**——全部被对应检查抓到。
 - 同上但**未被任何断言覆盖**的一处，如实记下：`openEventStream` 里 `send()` 的 `catch`（`controller.enqueue` 抛错时走 `shutdown`）目前**没有任何可触发的路径**——只有"流被关闭/置错但拆除没跑"才会走到它，而代码里所有关闭点都先走 `shutdown`。把 `catch` 改回"只置标志不拆除"，检查仍然全绿。这条修复是对的安全网，不是被测试证明的行为；加测试只能靠给生产代码塞一个测试专用入口，判定不划算。
-- `verify-pack` 是打包介质比对：0.3.0 打包时通过；0.4.0 尚未打包。README 这类文档改动会让已打包的 tarball 与当前树不一致——发下一版时重新 `pnpm pack` 后再跑。
+- `verify-pack` 是打包介质比对：0.3.0 / 0.4.0 / 0.5.0 打包时均通过。README 这类文档改动会让已打包的 tarball 与当前树不一致——发下一版时重新 `pnpm pack` 后再跑。
 - **0.3.0 曾在运行中的 Host 上验证**（2026-10-28，本机）：Loader 加载了宿主半边，`/api/ability-strip` 路由注册成功，浏览器→宿主 RPC 往返成功；页面实测收起态 `skill | 22 | MCP | 29`，点击行展开明细、列出 29 个工具名称，再次点击收起；MCP 故障弹窗的触发与关闭也实测过。0.4.0 的同一组实测待装后进行。
 - 早期版本的实测记录：能力条渲染在 `[data-composer-dock]`、编辑器下方；所发 bundle 的 revision 等于已安装拷贝的 `artifactRevision`，而不是源码树的——这个测量证明 `lib/` 下的代码已不是页面运行的代码。
