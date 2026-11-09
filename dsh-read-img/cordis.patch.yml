@@ -1,0 +1,7 @@
+# dsh-read-img — bundle patch
+#
+# 一个 entry、一个工具。端点参数在 profile 层（profile 的 cordis.patch.yml 里
+# `- id: read-img` + `config:`）提供；插件自己不存设置，也没有浏览器半边。
+- insert:
+    - id: read-img
+      name: 'dsh-read-img'

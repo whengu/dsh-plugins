@@ -634,3 +634,4 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 
 - [dsh-ability-strip/README.md](dsh-ability-strip/README.md)（双半边，有浏览器半边）
 - [dsh-subagent-wait-reminder/README.md](dsh-subagent-wait-reminder/README.md)（纯 Host 侧）
+- [dsh-read-img/README.md](dsh-read-img/README.md)（纯 Host 侧，单工具）
