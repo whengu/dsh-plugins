@@ -529,6 +529,24 @@ check(has(text, "bash"), "every non-MCP tool must be listed, not only the intere
 // only place they exist — so the detail must print them, for both halves.
 check(has(text, "Describe an image with the vision model"), "a non-MCP tool must show its description");
 check(has(text, "Read a file over MCP"), "an MCP tool must show its description too");
+// The heading count must be the length of the list under it, and the breakdown line
+// must account for every tool. This is the defect a reader hit: the heading said the
+// grand total while the list held only the non-MCP half, so the numbers looked wrong.
+// The number in the heading itself, read from the rendered order (heading icon has no
+// text, so "工具" is followed by the count). Asserting only the prose below would let a
+// regression back to the grand total pass unnoticed — it did, on my first attempt.
+const toolsHeadingAt = text.indexOf("工具");
+check(
+	toolsHeadingAt >= 0 && text[toolsHeadingAt + 1] === "3",
+	`the tools heading must count its own rows (3), saw ${JSON.stringify(text.slice(toolsHeadingAt, toolsHeadingAt + 2))}`,
+);
+check(has(text, "下列 3 个非 MCP"), "the breakdown must state how many rows are listed here");
+check(has(text, "上方 MCP 分区 2 个"), "the breakdown must state the MCP count it delegates upward");
+check(has(text, "共 5 个"), "the breakdown must still account for the grand total");
+check(
+	!has(text, "其余 2 个 MCP"),
+	"the MCP count must be counted, not derived by subtracting from the total",
+);
 check(
   has(text, "本会话 agent 视图"),
   "an agent-scoped answer must name its scope, because that is the view with restrictions applied",
@@ -1013,6 +1031,75 @@ check(
 // Any of the mounts above reintroducing a self-refresh timer fails here, whatever
 // it was for.
 check(timers.length === 0, `no mount may register an interval, saw ${timers.length}`);
+
+
+// --- The collapsed row is one control, not several ------------------------
+// It carries `role="button"`, so it must answer the keyboard. A role that takes a
+// tab stop and ignores Enter/Space is a trap: focus lands there and nothing happens.
+{
+	mount(okProps);
+	await settle();
+	const keyboardTree = render(okProps);
+	const row = findByLabel(keyboardTree, "展开明细");
+	check(row !== undefined, "the row must expose its expanded state in its label");
+	check(typeof row?.props?.onKeyDown === "function", "a role=button row must handle keys");
+	let prevented = 0;
+	row?.props?.onKeyDown?.({ key: "Enter", preventDefault: () => { prevented += 1; } });
+	check(prevented === 1, "Enter must be consumed, not left to the page");
+	await flush();
+	const opened = render(okProps);
+	check(
+		findByLabel(opened, "收起明细") !== undefined,
+		"Enter on the row must actually open the detail panel",
+	);
+	// Space is the other key a button answers to, and the one that scrolls by default.
+	const openRow = findByLabel(opened, "收起明细");
+	openRow?.props?.onKeyDown?.({ key: " ", preventDefault: () => {} });
+	await flush();
+	check(findByLabel(render(okProps), "展开明细") !== undefined, "Space must toggle it back");
+}
+
+// --- A read failure must not borrow the fault glyph -----------------------
+// Both used to render the warning triangle, so "we could not read the registry" and
+// "MCP is configured but nothing connected" looked identical once the row lost its
+// words. They are different facts and must stay visually distinct.
+const chipGlyph = (tree) => {
+	const chip = findByLabel(tree, "MCP");
+	if (chip === undefined) return undefined;
+	const svgs = collectElements(chip).filter((node) => node.type === "svg");
+	// The chip draws its mark first and its state second, so the LAST svg is the
+	// glyph that differs between states.
+	const stateSvg = svgs[svgs.length - 1];
+	return stateSvg?.children?.[0]?.props?.d;
+};
+{
+	mount(disconnectedProps);
+	await settle();
+	const faultGlyph = chipGlyph(render(disconnectedProps));
+	mount(badProps);
+	await settle();
+	const failureGlyph = chipGlyph(render(badProps));
+	check(faultGlyph !== undefined && failureGlyph !== undefined, "both states must draw a glyph");
+	check(
+		faultGlyph !== failureGlyph,
+		"a registry read failure must not render the same glyph as an MCP fault",
+	);
+}
+
+// --- No native button inside the row --------------------------------------
+// The row is `role="button"`; nesting a real <button> inside it produces two tab
+// stops for one visual control and a nested-interactive violation.
+{
+	mount(disconnectedProps);
+	await settle();
+	const faultTree = render(disconnectedProps);
+	const row = findByLabel(faultTree, "展开明细") ?? findByLabel(faultTree, "收起明细");
+	const nested = row === undefined ? [] : collectElements(row).filter((node) => node.type === "button");
+	check(
+		nested.length === 0,
+		`a role=button row must not contain a native button, saw ${nested.length}`,
+	);
+}
 
 console.log("---");
 if (problems.length > 0) {

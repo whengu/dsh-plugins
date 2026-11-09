@@ -10,6 +10,7 @@ import {
 	apply,
 	createToolSummaryReader,
 	inject,
+	MAX_CACHED_SCOPES,
 	MAX_DESCRIPTION_CHARS,
 	name,
 	openEventStream,
@@ -223,6 +224,42 @@ check(heard.length === 1, "a detached subscriber must stop hearing changes");
 check(reader.version === 2, "the version must keep counting after a detach");
 reader.dispose();
 check(readerChangeListeners.length === 0, "dispose must drop the tools/change listener");
+
+// --- the cache is bounded per scope ---------------------------------------
+// The cache is keyed by session id, and a host can outlive far more sessions than
+// it has registry changes. Without a bound the map would grow with the number of
+// sessions ever opened, each entry holding a whole catalog with descriptions.
+let boundedSchemas = 0;
+const boundedReader = createToolSummaryReader({
+	tools: {
+		schemas: () => {
+			boundedSchemas += 1;
+			return [{ name: "read" }];
+		},
+	},
+	on() {
+		return () => {};
+	},
+});
+const readScoped = (id) => boundedReader.read(id);
+// Filling up to the cap keeps every scope cached.
+for (let index = 0; index < MAX_CACHED_SCOPES; index += 1) readScoped(`scope-${index}`);
+const callsAtCap = boundedSchemas;
+check(callsAtCap === MAX_CACHED_SCOPES, `each new scope must read once, saw ${callsAtCap}`);
+readScoped("scope-0");
+check(boundedSchemas === callsAtCap, "a scope still inside the cap must be served from the cache");
+// One past the cap evicts the oldest scope, so it is read again instead of growing.
+readScoped(`scope-${MAX_CACHED_SCOPES}`);
+readScoped("scope-0");
+check(
+	boundedSchemas === callsAtCap + 2,
+	`the oldest scope must be evicted past the cap, saw ${boundedSchemas - callsAtCap} extra reads`,
+);
+// The newest scope is still cached: eviction is bounded, not a flush.
+const callsBeforeHit = boundedSchemas;
+readScoped(`scope-${MAX_CACHED_SCOPES}`);
+check(boundedSchemas === callsBeforeHit, "a recently cached scope must survive the eviction");
+boundedReader.dispose();
 
 const registered = [];
 const disposed = [];

@@ -7,17 +7,26 @@
  * that fails to connect registers no `mcp__<server>__*` tools, so the registry is
  * the only browser-visible evidence of a live MCP connection.
  *
- * This half answers exactly that one question and nothing else:
+ * This half answers one question and nothing else — *what does the tool registry
+ * hold for this session* — and it answers it in three parts:
  *
- *   - read `ctx.tools.schemas()`, split the names on the `mcp__<server>__<tool>`
- *     convention the MCP client itself uses, and count tools per server;
- *   - serve the result on one exact, owner-only Connection route;
- *   - hold one Server-Sent Events stream per browser tab that says "the registry
- *     moved" the moment it does, so the strip never has to run a timer.
+ *   - read `ctx.tools.schemas(agent)` for the session's agent, which is the same
+ *     call the real executors make, so `restrict()` masks and scoped shadowing are
+ *     applied exactly as a model step sees them;
+ *   - split that catalog into the MCP servers (names follow `mcp__<server>__<tool>`)
+ *     and everything else, keeping each tool's own description so the panel can say
+ *     what a tool is for;
+ *   - serve the result on one exact, owner-only Connection route, plus one
+ *     Server-Sent Events stream per browser tab that says "the registry moved" the
+ *     moment it does, so the strip never has to run a timer.
+ *
+ * What it reports is the REGISTRY, not the request. A plugin may filter `tools` out
+ * of the LLM request afterwards (`dsh-read-img` hides `read_image` that way), and
+ * that filter is invisible here; the browser half states this in the panel rather
+ * than pretending the two are the same thing.
  *
  * It is read-only: it registers no tool, mutates no registry, edits no config, and
- * holds no state between requests. There is nothing to synchronize and nothing to
- * dispose beyond the two routes and the streams they opened.
+ * holds no state between requests beyond a bounded catalog cache.
  *
  * @module dsh-ability-strip
  */
@@ -89,8 +98,9 @@ export function splitMcpToolName(toolName) {
  * indistinguishable from one that never connected — both register nothing.
  * The strip therefore reports both as not connected, which is the safe reading:
  * a server whose tools are unavailable is not usable even if its socket is up.
- * @param schemas - model-facing tool schemas from `ctx.tools.schemas()`.
- * @returns one entry per server with a registered tool, sorted by name.
+ * @param schemas - model-facing tool schemas from `ctx.tools.schemas(...)`.
+ * @returns one entry per server that has a registered tool, each tool carrying its
+ * description; servers sorted by name, tools sorted by name.
  */
 export function summarizeMcpTools(schemas) {
 	/** @type {Map<string, { name: string, description: string }[]>} */
@@ -112,12 +122,13 @@ export function summarizeMcpTools(schemas) {
 }
 
 /**
- * Longest description carried to the browser, in characters.
+ * Longest description carried to the browser, exclusive of the ellipsis.
  *
  * The catalog is the only place a tool's own words exist, and the panel shows them
  * next to the name — that is the answer to "what is this tool actually for". The
  * cap is a wire bound, not a judgement: a pathological description cannot turn one
- * panel read into a megabyte, and the panel says when it cut a line.
+ * panel read into a megabyte. A cut description keeps `MAX_DESCRIPTION_CHARS`
+ * characters **plus** the `…` marker, so the marker is never what got trimmed off.
  */
 export const MAX_DESCRIPTION_CHARS = 400;
 
@@ -226,6 +237,17 @@ export function readToolSummary(ctx, sessionId) {
 }
 
 /**
+ * How many viewing scopes keep a cached answer.
+ *
+ * The cache is keyed by session id and dropped wholesale on `tools/change`, but a
+ * host can outlive many sessions without any registry change, and each entry holds
+ * a whole catalog including descriptions. Without a bound the map would grow with
+ * the number of sessions ever opened; with it, the cost of eviction is one
+ * `schemas()` read for a scope that comes back, and nothing becomes stale.
+ */
+export const MAX_CACHED_SCOPES = 8;
+
+/**
  * Wrap {@link readToolSummary} in a cache invalidated by the registry itself, and
  * hand out the same invalidation as a change signal.
  *
@@ -276,7 +298,19 @@ export function createToolSummaryReader(ctx) {
 			const hit = cached.get(key);
 			if (hit !== void 0) return hit;
 			const result = readToolSummary(ctx, sessionId);
-			if (result.ok) cached.set(key, result);
+			if (result.ok) {
+				cached.set(key, result);
+				// Bound the cache. `Map` iterates in insertion order, so dropping the first
+				// key evicts the scope that was cached longest ago. This is insertion
+				// order, not true LRU — a hit does not re-order — which is deliberate: it
+				// costs one line instead of a recency list, and the worst case is one extra
+				// `schemas()` read for a session that returns.
+				while (cached.size > MAX_CACHED_SCOPES) {
+					const oldest = cached.keys().next();
+					if (oldest.done === true) break;
+					cached.delete(oldest.value);
+				}
+			}
 			return result;
 		},
 		/**
@@ -321,7 +355,7 @@ export function createToolSummaryReader(ctx) {
  * The answer route speaks the shared `/api` carrier's client-request envelope,
  * which is what `connection.rpc.call(channel, endpoint, payload)` puts on the wire:
  *
- *   request   { type: 'client-request',  rpcId, payload: { action, data } }
+ *   request   { type: 'client-request',  rpcId, payload: { sessionId } }
  *   response  { type: 'server-response', rpcId, result }
  *
  * where `result` is `{ ok: true, value }` or `{ ok: false, error: { code, message, details } }`.
@@ -338,7 +372,8 @@ export function apply(ctx) {
 		const streams = new Set();
 		const disposeSummary = ctx.connection.fetch.register({
 			path: `${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}`,
-			// `rpc.call` always POSTs; the read carries no body of its own.
+			// `rpc.call` always POSTs. The body carries only the carrier's envelope,
+			// whose `payload` names the viewing session and nothing else.
 			methods: ["POST"],
 			requestBody: "buffered",
 			fetch: async (request) => {
@@ -494,7 +529,7 @@ export function openEventStream(reader, request, streams) {
  * Extract this plugin's fields from the carrier's client-request envelope.
  * The carrier has already validated transport-level shape.
  * @param request - incoming Fetch API request.
- * @returns the rpc id, or undefined when unparseable.
+ * @returns the rpc id and the caller's payload, or undefined when unparseable.
  */
 async function readClientRequest(request) {
 	let body;

@@ -18,7 +18,7 @@ DeepSeek Harness（dsh）Web GUI 输入框下方的**只读**能力条——挂�
 
 - 每个 skill 的 `/name`、`model+user` / `user-only`、描述和 `whenToUse`
 - 每个**已连接** MCP 服务器，及其每个工具的**名字与描述**
-- **非 MCP 工具**的名字与描述，标题右侧标明这份清单是按"本会话 agent 可见"还是"全局注册"读的
+- **非 MCP 工具**的名字与描述。**标题的数字就是这一列的条数**（不是总数），下面一行小字把数字算清：`共 N 个：下列 x 个非 MCP，上方 MCP 分区 y 个`；右侧标明是按 agent 视图还是全局视图读的
 - 已配置的 MCP Loader 行，带各自的 phase；`dsh-mcp-resources` 是否挂载
 - profile 启用的插件包
 

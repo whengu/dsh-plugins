@@ -128,6 +128,11 @@ window.__ModuleLoader__.load({
 			skill: "M8 2.1l1.6 4.3 4.3 1.6-4.3 1.6L8 13.9 6.4 9.6 2.1 8l4.3-1.6z",
 			warn: "M8 2.3l5.5 9.7H2.5zM8 6.1v2.9M8 10.6v.7",
 			tools: "M11.3 2.4a3 3 0 0 0-3.7 3.8L2.9 10.9a1.4 1.4 0 1 0 2 2l4.7-4.7a3 3 0 0 0 3.8-3.7l-1.8 1.8-1.7-.4-.4-1.7z",
+			// "We could not read this" — deliberately a different shape from `warn`.
+			// The two used to share the warning triangle, which made a failed read
+			// indistinguishable from a configured-but-broken MCP deployment once the
+			// collapsed row stopped printing words.
+			unknown: "M8 1.9a6.1 6.1 0 1 0 0 12.2A6.1 6.1 0 0 0 8 1.9M6.4 6.4a1.6 1.6 0 1 1 2.1 1.5c-.5.2-.7.6-.7 1.1v.3M8 11.4v.5",
 		};
 
 		/* Named components keep the call sites readable. */
@@ -141,6 +146,7 @@ window.__ModuleLoader__.load({
 		const IconRefreshOutlineRegular = (p) => h(Icon, { ...p, d: PATH.refresh });
 		const IconSkillOutlineRegular = (p) => h(Icon, { ...p, d: PATH.skill });
 		const IconWarningOutlineRegular = (p) => h(Icon, { ...p, d: PATH.warn });
+		const IconUnknownOutlineRegular = (p) => h(Icon, { ...p, d: PATH.unknown });
 		const IconToolOutlineRegular = (p) => h(Icon, { ...p, d: PATH.tools });
 
 		/** Tone palette for {@link Tag}: the host's state colours, nothing else. */
@@ -364,6 +370,7 @@ window.__ModuleLoader__.load({
 			IconRefreshOutlineRegular,
 			IconSkillOutlineRegular,
 			IconWarningOutlineRegular,
+			IconUnknownOutlineRegular,
 			IconToolOutlineRegular,
 		};
 
@@ -1147,7 +1154,7 @@ window.__ModuleLoader__.load({
 				const skills = payload?.skills;
 				let body;
 				if (skills?.error !== void 0)
-					body = h(ui.IconWarningOutlineRegular, {
+					body = h(ui.IconUnknownOutlineRegular, {
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
 					});
@@ -1169,7 +1176,7 @@ window.__ModuleLoader__.load({
 				let body;
 				if (payload === void 0) body = h("span", MUTED, "…");
 				else if (payload.tools?.error !== void 0)
-					body = h(ui.IconWarningOutlineRegular, {
+					body = h(ui.IconUnknownOutlineRegular, {
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
 					});
@@ -1200,24 +1207,25 @@ window.__ModuleLoader__.load({
 				// A fault is the one case where the mark must be actionable: clicking it
 				// re-opens the explanation, so a reader who dismissed the dialog can get
 				// it back without hunting for it.
+				//
+				// It is a `span`, not a `<button>`, on purpose: this sits inside the row
+				// that is itself `role="button"`, and a native button inside a button-like
+				// element is invalid nesting — two tab stops for one visual row, and
+				// screen readers disagree about which one wins. The keyboard path to the
+				// dialog is the row itself (which opens the panel, whose MCP section states
+				// the fault) plus the dialog that opens by itself; this click is a mouse
+				// convenience layered on that, so it carries no role and no tab stop.
 				if (!mcpFault) return label;
 				return h(
-					"button",
+					"span",
 					{
-						type: "button",
 						onClick: (event) => {
 							event.stopPropagation();
 							setAlertOpen(true);
 						},
 						title: "MCP 连接故障：点击查看原因",
-						"aria-label": "MCP 连接故障：点击查看原因",
 						style: {
 							...CHIP,
-							padding: 0,
-							border: "none",
-							background: "none",
-							font: "inherit",
-							color: "inherit",
 							cursor: "pointer",
 						},
 					},
@@ -1234,7 +1242,7 @@ window.__ModuleLoader__.load({
 				let body;
 				if (payload === void 0) body = h("span", MUTED, "…");
 				else if (tools?.error !== void 0)
-					body = h(ui.IconWarningOutlineRegular, {
+					body = h(ui.IconUnknownOutlineRegular, {
 						size: 12,
 						style: { color: "var(--dsw-alias-state-error-primary)" },
 					});
@@ -1256,50 +1264,76 @@ window.__ModuleLoader__.load({
 				const tools = payload.tools;
 				const local = (tools?.local ?? []).map(asTool);
 				const failed = tools?.error !== void 0;
+				// The MCP count comes from the servers themselves, not from subtracting the
+				// local count from the total. Subtraction would present an unverified
+				// invariant as a fact: a schema whose name is empty or not a string is
+				// counted in `totalTools` (schemas.length) but skipped by both buckets, so
+				// "the rest are MCP" would be wrong by exactly that amount.
+				const mcpCount = connectedServers.reduce((sum, server) => sum + server.tools.length, 0);
+				const total = tools?.totalTools ?? 0;
+				const unclassified = Math.max(0, total - local.length - mcpCount);
+
+				const metaStyle = { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5 };
+				/** Muted explanatory lines, kept out of the children array as data. */
+				const meta = failed
+					? []
+					: [
+							// Make the arithmetic visible, so "40 shown, eleven listed" cannot be
+							// read as a bug: the total is split across two sections.
+							`共 ${total} 个：下列 ${local.length} 个非 MCP` +
+								`，上方 MCP 分区 ${mcpCount} 个` +
+								(unclassified > 0 ? `，另有 ${unclassified} 个名字不可解析` : "") +
+								"。",
+							// Without this line the section over-claims: `dsh-read-img` hides
+							// `read_image` by filtering `options.tools` inside `llm/stream`, and
+							// a guard refuses residual calls — the registry still lists it, so
+							// the panel does too. Saying so beats silently looking wrong.
+							"这里是工具注册表。插件可以在请求层再次过滤（例如 dsh-read-img 会隐藏 read_image 并拒绝调用），这类过滤在此视图中看不到。",
+						];
+
+				// Three distinct states, kept apart on purpose: unreadable, read but empty,
+				// and a list. Folding the first into the second would turn our own failure
+				// into a claim about the deployment.
+				let body;
+				if (failed) {
+					body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, `工具清单读取失败：${tools.error}`);
+				} else if (tools === void 0) {
+					body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, "尚未读到工具清单。");
+				} else if (local.length === 0) {
+					body = h(
+						"div",
+						{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+						mcpCount > 0 ? "除 MCP 工具外没有注册工具。" : "注册表里没有任何工具。",
+					);
+				} else {
+					body = h(
+						"div",
+						{ style: { display: "flex", flexDirection: "column" } },
+						local.map((tool) => h(ToolRow, { key: tool.name, tool })),
+					);
+				}
+
 				return h(
 					"div",
 					null,
 					h(GroupHeading, {
 						icon: h(ui.IconToolOutlineRegular, { size: 13 }),
 						name: "工具",
-						count: failed ? void 0 : tools?.totalTools,
-						// The scope, stated rather than implied. It says "视图", not
-						// "可见": this reads the REGISTRY, so a plugin that filters tools
-						// out of the LLM request afterwards is not reflected here — see the
-						// caveat line below, which exists because that difference is
-						// exactly what a reader hit while looking for `read_image`.
+						// The count must match the list right under it. Showing the grand total
+						// here is what made the row count look wrong: the MCP tools are listed
+						// in the MCP section above, so this section holds only the rest.
+						count: failed ? void 0 : local.length,
+						// The scope, stated rather than implied. It says "视图", not "可见":
+						// this reads the REGISTRY, so a plugin that filters tools out of the
+						// LLM request afterwards is not reflected here.
 						note: failed
 							? "读取失败"
 							: tools?.scope === "agent"
 								? "注册表 · 本会话 agent 视图"
 								: "注册表 · 全局视图（未取到本会话 agent）",
 					}),
-					// Without this line the section over-claims: `dsh-read-img` hides
-					// `read_image` by filtering `options.tools` inside `llm/stream`, and
-					// a guard refuses residual calls — the registry still lists it, so
-					// the panel does too. Saying so beats silently looking wrong.
-					h(
-						"div",
-						{ style: { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5, padding: "2px 0 4px" } },
-						"这里是工具注册表。插件可以在请求层再次过滤（例如 dsh-read-img 会隐藏 read_image 并拒绝调用），这类过滤在此视图中看不到。",
-					),
-					failed
-						? h(
-								"div",
-								{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-								`工具清单读取失败：${tools.error}`,
-							)
-						: local.length === 0
-							? h(
-									"div",
-									{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-									"除 MCP 工具外没有注册工具。",
-								)
-							: h(
-									"div",
-									{ style: { display: "flex", flexDirection: "column" } },
-									local.map((tool) => h(ToolRow, { key: tool.name, tool })),
-								),
+					meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
+					body,
 				);
 			})();
 
@@ -1493,6 +1527,21 @@ window.__ModuleLoader__.load({
 				);
 			})();
 
+			/**
+			 * Open or close the detail panel.
+			 *
+			 * One function for both input paths, because the row is `role="button"` and
+			 * a role="button" that ignores Enter and Space is a keyboard trap in
+			 * disguise: it takes a tab stop and then does nothing with it.
+			 */
+			const toggle = () => {
+				// Opening the panel is a request for detail, so it reads: the stream already
+				// keeps the MCP answer live, but the skill and plugin blocks have no change
+				// signal of their own, and this is the one moment the reader asks to see them.
+				if (!open) void run({ silent: true });
+				setOpen((prev) => !prev);
+			};
+
 			return h(
 				"div",
 				{
@@ -1524,13 +1573,13 @@ window.__ModuleLoader__.load({
 						"aria-expanded": open,
 						"aria-label": open ? "收起明细" : "展开明细",
 						title: open ? "收起明细" : "明细",
-						onClick: () => {
-							// Opening the panel is a request for detail, so it reads: the
-							// stream already keeps the MCP answer live, but the skill and
-							// plugin blocks have no change signal of their own, and this is
-							// the one moment the reader asks to see them.
-							if (!open) void run({ silent: true });
-							setOpen((prev) => !prev);
+						onClick: toggle,
+						onKeyDown: (event) => {
+							// Enter and Space are what a button answers to. Space scrolls the
+							// page by default, so it has to be prevented explicitly.
+							if (event.key !== "Enter" && event.key !== " ") return;
+							event.preventDefault();
+							toggle();
 						},
 						onMouseDown: (event) => event.stopPropagation(),
 						style: {
