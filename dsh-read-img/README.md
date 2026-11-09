@@ -1,6 +1,6 @@
 # dsh-read-img
 
-状态：**已安装并实测通过**（web profile，0.1.4，2026-11-09 安装；check 通过、离线用例 32/32、插件用例 10/10、live 用例 1/1、应用内探针通过）。**纯 Host 侧插件**（无 `dsh.client`），不涉及浏览器 `Ctrl+F5`。
+状态：仓库源码 **0.1.6**（2026-11-09 评审修复，尚未重新安装）；线上 `web` profile 当前装的是 **0.1.5**。0.1.6 的本地验证：`check` 通过、离线用例 42/42、插件用例 11/11（无需 `node_modules`）、live 用例在无 provider 配置时**明确 skip**。**纯 Host 侧插件**（无 `dsh.client`），不涉及浏览器 `Ctrl+F5`；替换已安装包的宿主 JS 需要重启 Host（见仓库根 [INSTALL.md §15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)）。
 
 ## 作用
 
@@ -10,7 +10,7 @@
 read_img(path, question?)
 ```
 
-- `path`：绝对路径、相对会话工作目录的路径，或 `file://` / `http(s)://` URL
+- `path`：绝对路径、相对会话工作目录的路径、`file://` URL（主机名必须留空）或 `http(s)://` URL。Windows 网络共享请**直接传 UNC 路径**（`\\server\share\x.png`），不要写成 `file://server/share/x.png`
 - `question`：想问什么（最长 1000 字符）；省略则用配置里的默认指令做完整描述 + 文字转录
 
 **典型场景**：浏览器 / 桌面工具把截图存到本地路径 → 模型调用 `read_img(path="…")` → 拿到「图里写了什么、按钮在哪」。
@@ -32,6 +32,16 @@ read_img(path, question?)
 | 调用兜底：`tools/pre-execute` 返回 `{ kind: "deny", reason }` | `dsh-tools/lib/types/contracts.d.ts:321-326`（`PreToolDecision`） |
 
 **为什么只有一个工具、没有消息改写**：本插件的需求是「模型主动去读一个文件」，属于工具语义。用户粘贴图片的场景由别处负责，所以不改写任何消息，也不注册额外工具——上下文里只多一个 schema（979 字节，约 250 tokens）。**唯一例外**是可关闭的工具隐藏器（`hideTools`），见下文〈隐藏官方的 `read_image`〉。
+
+## 运行要求（`engines.dsh`）
+
+```json
+"engines": { "dsh": ">=0.2.0-rc.2", "node": ">=22" }
+```
+
+- **只有下限，没有上界**。上界（原先的 `>=0.2.0-rc.2 <0.3.0`）会让 dsh 的版本闸门在**安装时直接拒绝** 0.3.x——一次正常的官方升级就变成「插件不可用」。`check` 现在会拒绝任何带空间隔或 `^`/`~` 的写法。
+- **下限依据**：本插件只用到四类宿主契约，`@deepseek-ai/dsh@0.2.0-rc.2` 的发行包内逐条存在——`tools/pre-execute` 事件与 `PreToolDecision.kind: "deny"`（`dsh-tools@0.2.0-rc.2` 的 `lib/types/index.d.ts`）、`defineTool` 的 `output.schema`/`output.render`（同包 `lib/index.js`）、`llm/stream` 入参里的 `tools?: ToolSchema[]`（`dsh-llm@0.2.0-rc.2` 的 `lib/types/types.d.ts`）、会话头的绝对 `cwd`（`dsh-session@0.2.0-rc.2`）。更早的版本没有核实，因此不声明支持。
+- **`peerDependencies` 不参与版本闸门**：dsh 自己的判定逻辑是「有 `engines.dsh` 时由它单独决定，忽略 peerDependencies」（`dsh-app-boot/lib/index.js` 的 `unmetRequirements` 注释）。那两个 optional peer 只是「这些名字来自宿主」的文档，不作为版本要求。
 
 ## 配置
 
@@ -87,6 +97,7 @@ read_img(path, question?)
 
 ## 已知限制（显式取舍）
 
+- **`file://` 只接受空主机名**：`file:///C:/shots/a.png` 可以；`file://server/share/x.png`、`file://example.com/x.png` 一律拒绝。理由：Node 对带主机名的 `file:` URL **平台行为相反**——Windows 的 `fileURLToPath` 会把它转成 UNC 路径 `\\server\share\x`，POSIX 直接抛错，同一份输入在两个平台语义不同。插件改为自己检查 `URL.hostname`，两端同规则；Windows 上读网络共享仍可**直接传 UNC 路径**（`toTarget` 把它当绝对路径）。`file://localhost/...` 等价于空主机名（URL 解析器会把 `localhost` 归一成空）。
 - **单图**：一次调用读一张图。多图请分多次调用；目前没有 `paths` 数组参数。
 - **无流式**：等视觉模型整段返回后才把文本交给模型，长图 + 慢端点会让该步变慢（有 120s 上限）。
 - **思考默认关闭**：看图描述不需要推理链。关闭用的是 vLLM 系模板开关 `chat_template_kwargs.enable_thinking`——在 group/vision 上实测：不开任何开关时 300 token 全花在推理上、正文为空；`reasoning_effort: "none"` 只把推理压到 265 字符；只有模板开关能让推理归零。`thinking: true` 时端点会先想再答，`maxTokens` 要留足（推理与答案共用预算）。
@@ -101,22 +112,32 @@ read_img(path, question?)
 - **多图批量**：一次一张。
 - **本地 OCR**：不内置任何 OCR，全部依赖配置的视觉端点。
 
-## 验证状态
+## 验证状态（0.1.6，2026-11-09，Windows + node 24.18.1）
 
 | 项 | 结果 |
 |---|---|
-| `pnpm check`（语法 + 包契约 + patch 契约） | 通过，4 个 lib 文件 |
-| 离线用例 `pnpm test`（cache / image / vision / hide-tools，零依赖） | 37/37 通过 |
-| 插件用例 `pnpm test:plugin`（需宿主包可解析） | 11/11 通过 |
-| live 用例 `pnpm test:live`（打真实端点） | 1/1 通过，2.8s，正确识别「左上红、右下蓝、白底」 |
-| 应用内探针（子智能体调用 `read_img`） | 通过：绝对路径、相对路径、错误路径三种场景；报错后工具仍可用 |
+| `pnpm check`（语法 + 包契约 + patch 契约 + `engines.dsh` 单一下限） | 通过，5 个 lib 文件 |
+| 离线用例 `pnpm test`（cache / image / vision / hide-tools，零依赖） | **42/42 通过** |
+| 插件用例 `pnpm test:plugin` | **11/11 通过**，无 `node_modules` 也能跑 |
+| live 用例 `pnpm test:live` | 未配置 `VISION_BASE`/`VISION_KEY`/`VISION_MODEL` 时 **1 skipped / exit 0**；本次未打真实端点 |
+| 应用内探针（子智能体调用 `read_img`） | 0.1.5 时通过（绝对 / 相对 / 错误路径）；0.1.6 未重跑 |
 | 上下文占用 | 1 个工具，schema 979 字节（约 250 tokens）；且不再声明官方的 `read_image`（省 1120 字节） |
 
-> `pnpm test:plugin` / `pnpm test:live` 需要能解析 `@deepseek-ai/dsh-tools` 与 `@deepseek-ai/schemastery`（只有 dsh 安装树里才有，npm 上的同名包是占位版本）。在装有 dsh 的机器上，把这两个包软链到本目录 `node_modules/@deepseek-ai/` 即可；`pnpm test` 本身零依赖，任何机器可跑。
+> **`pnpm test:plugin` 不需要 `node_modules`，也不需要软链**。`lib/index.js` 从宿主拿两个包（`@deepseek-ai/schemastery`、`@deepseek-ai/dsh-tools`），而插件自身不依赖它们；测试用 `test/host-packages.mjs` 在本机找已安装的 dsh，把这两个裸标识符别名到该安装里的真实文件（`test/host-loader.mjs` 是解析钩子），所以 `lib/` 一行不用改、也不新增依赖。查找顺序：`DSH_HOST_DIR`（指向已安装的 `@deepseek-ai/dsh` 包目录）→ node 自己的全局模块目录 → PATH 各条目下的模块目录。找不到就**直接失败**并打印查过哪些路径，不会静默跳过。
+> `pnpm test` 本身零依赖，任何机器可跑；`pnpm test:live` 没配环境变量时只报一个 skip。
+
+不装 pnpm 时的等价命令（都在本插件目录里执行）：
+
+```powershell
+node scripts/check.mjs
+node --test test/cache.test.mjs test/image.test.mjs test/vision.test.mjs test/hide-tools.test.mjs
+node --test test/plugin.test.mjs        # 干净 checkout 也能跑
+node --test test/live.test.mjs          # 无 provider 配置 -> 1 skipped / exit 0
+```
 
 ## 安装
 
-跨插件铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录 / `link:` 安装等）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令。本插件是**纯 Host 侧**插件：Host 不需要重启。
+跨插件铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录 / `link:` 安装等）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令。本插件是**纯 Host 侧**插件：没有浏览器半边，不需要 `Ctrl+F5`；但升级/替换已安装包的宿主 JS 必须**重启 Host** 才加载新代码（[§15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)）。
 
 ### 打包前检查（只读源码，不碰 profile）
 
@@ -161,6 +182,7 @@ dsh plugin --profile web remove dsh-read-img                    # 彻底移除
 
 ### 安装记录
 
+- **2026-11-09（本轮）**：**0.1.6 只改了源码，尚未安装**。装上时替换的是已安装包的宿主 JS（`lib/image.js`、`package.json`、`scripts/check.mjs`），按 [INSTALL.md §15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启) 必须**重启 Host** 才生效；重启前请先按本文〈验证状态〉跑完本地检查。
 - **2026-11-09**：0.1.5 装入 `web` profile（仓库构建的 tarball 约 15 KB，7 个条目：`lib/index.js`、`lib/cache.js`、`lib/image.js`、`lib/vision.js`、`cordis.patch.yml`、`package.json`、`README.md`）。装载后 `include:read-img` 为 `active`；`dsh --profile web --dump-config` 中 `- id: read-img` 带完整 config。同一天停用第三方 `dsh-tool-vision`（`enabled: false`），上下文中的视觉工具由 15 个降为 1 个。当日中途曾用开发目录产物装过一次，随后以**本仓库构建的 tarball 重装**，确认运行副本与源码一致（`package.json` 由 `pnpm pack` 规范化，见下）。
 
 ## 运行副本与源码的同步状态
@@ -186,9 +208,11 @@ foreach ($file in 'lib/index.js','lib/cache.js','lib/image.js','lib/vision.js','
 4. **报「视觉模型返回了空内容」**：`model` 写错，或 `maxTokens` 太小被推理内容占满。
 5. **报「图片 … 超过上限」**：调大 `maxImageBytes`，或先裁剪图片。
 6. **报「不是普通文件」/「文件不存在」**：路径按会话 cwd 解析，相对路径容易指错；报错里已给出解析后的绝对路径。
+7. **报「不支持的 file URL」**：看括号里的原因。带主机名的（`file://server/share/x.png`）改成 UNC 路径本身；主机名为空但仍失败的（Windows 上 `file:///tmp/a.png` 没有盘符），改成 `file:///C:/tmp/a.png` 或直接传路径。
 
 ## 版本
 
+- 0.1.6 — 评审修复四项：`engines.dsh` 去掉上界（`>=0.2.0-rc.2 <0.3.0` → `>=0.2.0-rc.2`，`check` 现在拒绝任何上界写法）；`file://` 带主机名改为**显式检查 `URL.hostname`**、两端一律拒绝（不再依赖 `fileURLToPath` 的平台差异），并在报错里指向 UNC 路径这一可用形式；`image.test.mjs` 与 `plugin.test.mjs` 去掉 POSIX 写死的期望（改用 `resolve`/`pathToFileURL`/`fileURLToPath` 生成，平台差异单独成用例）；`test:plugin` 不再需要 `node_modules`（测试自动从已安装的 dsh 解析两个宿主包）。用例 37→42，插件用例 11/11。live 用例未配置环境变量时改为明确 skip。文档同步「零绝对路径」。
 - 0.1.5 — 评审修复：默认值数组不再被共享引用（`hideTools` 每次拷贝、`DEFAULTS.hideTools` 冻结）；`file://` 带主机名的报错带 `read_img:` 前缀；调用方取消不再被误报成超时；媒体类型改为**魔数优先**；响应体超过 4 MB 直接拒绝。用例 32→37、10→11。
 - 0.1.4 — 新增 `hideTools`（默认 `["read_image"]`）：在 `llm/stream` 里过滤声明、在 `tools/pre-execute` 里拒绝调用，全程 fail-open。停用宿主那个永远拿不到内容的官方图像工具，避免模型误调。
 - 0.1.3 — `maxTokens` 默认改为 20000；新增 `thinking` 配置（默认 `false`）。关闭时发送 `chat_template_kwargs: {enable_thinking: false}`：实测该端点从「300 token 用尽、正文为空」变为「6 token 直接作答」。`reasoning_effort: "none"` 经实测只把推理从 539 字符压到 265 字符、并未关闭，因此不发送。

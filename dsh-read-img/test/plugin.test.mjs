@@ -1,20 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LruCache } from "../lib/cache.js";
-import {
-  apply,
-  createReader,
-  DEFAULTS,
-  MAX_QUESTION_CHARS,
-  normalizeConfig,
-  TOOL_NAME,
-} from "../lib/index.js";
 import { readImageFile } from "../lib/image.js";
+import { registerHostModules } from "./host-packages.mjs";
+
+// `lib/index.js` imports `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools`,
+// which dsh supplies at runtime and this package does not depend on. A clean
+// checkout has no node_modules, so alias those two specifiers to the installed
+// dsh first (see test/host-packages.mjs) and only then load the plugin.
+registerHostModules();
+const { apply, createReader, DEFAULTS, MAX_QUESTION_CHARS, normalizeConfig, TOOL_NAME } = await import(
+  "../lib/index.js"
+);
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
 );
+
+/** Escape a literal string for use inside a RegExp (native paths contain `\`). */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /** Fake cordis context that records registered tools. */
 function fakeCtx() {
@@ -99,12 +109,17 @@ test("reader: reads a file, appends the resolved path, and caches by content", a
     readFileImpl: async () => ({ bytes: PNG, mime: "image/png" }),
   });
 
-  const first = await read({ path: "shots/a.png" }, { agent: { session: { header: { cwd: "/work" } } } });
+  // Native absolute path, so the expectation holds on Windows and POSIX alike.
+  const cwd = resolve(tmpdir(), "read-img-plugin-cwd");
+  const resolved = resolve(cwd, "shots", "a.png");
+  const exec = { agent: { session: { header: { cwd } } } };
+
+  const first = await read({ path: "shots/a.png" }, exec);
   assert.match(first, /a red square/);
-  assert.match(first, /\(image: \/work\/shots\/a\.png\)/);
+  assert.match(first, new RegExp(`\\(image: ${escapeRegExp(resolved)}\\)`));
   assert.equal(calls.length, 1);
 
-  const second = await read({ path: "shots/a.png" }, { agent: { session: { header: { cwd: "/work" } } } });
+  const second = await read({ path: "shots/a.png" }, exec);
   assert.equal(second, first);
   assert.equal(calls.length, 1, "second read must be served from cache");
 });
@@ -154,10 +169,10 @@ test("reader: real fixture round-trips through readImageFile", async () => {
     cache: new LruCache(4),
     fetchImpl: stubFetch().impl,
   });
-  const fixture = new URL("./fixtures/red-square.png", import.meta.url).pathname;
+  const fixture = fileURLToPath(new URL("./fixtures/red-square.png", import.meta.url));
   const answer = await read({ path: fixture }, {});
   assert.match(answer, /a red square/);
-  assert.match(answer, new RegExp(`\\(image: ${fixture.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
+  assert.match(answer, new RegExp(`\\(image: ${escapeRegExp(fixture)}\\)`));
 
   // The fixture must really be a PNG, so this also covers mime sniffing.
   const direct = await readImageFile(fixture, 1024 * 1024);

@@ -43,7 +43,16 @@ check(typeof pkg.version === "string" && /^\d+\.\d+\.\d+/.test(pkg.version), "ve
 check(pkg.type === "module", 'type 必须是 "module"');
 check(pkg.main === "lib/index.js", "main 必须是 lib/index.js");
 check(pkg.dsh?.bundle?.patch === "./cordis.patch.yml", "dsh.bundle.patch 缺失或指向错误（缺了只装不加载）");
-check(typeof pkg.engines?.dsh === "string" && pkg.engines.dsh.length > 0, "engines.dsh 必须声明");
+const dshRange = typeof pkg.engines?.dsh === "string" ? pkg.engines.dsh.trim() : "";
+check(dshRange.length > 0, "engines.dsh 必须声明");
+// A lower bound only. An upper bound (or `^` / `~`) makes the dsh version gate
+// refuse every future major at install time: `>=0.2.0-rc.2 <0.3.0` rejected
+// dsh 0.3.x outright, and dsh ignores peerDependencies once engines.dsh exists,
+// so this one string would decide the upgrade alone.
+check(
+  /^>=\s*[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(dshRange),
+  `engines.dsh 必须是单一下限（形如 >=0.2.0-rc.2），实际 "${dshRange}"；上界会在下次大版本升级时直接拒绝安装`,
+);
 check(pkg.exports?.["."] === "./lib/index.js", 'exports["."] 必须指向 ./lib/index.js');
 check(pkg.exports?.["./cordis.patch.yml"] === "./cordis.patch.yml", 'exports["./cordis.patch.yml"] 缺失');
 

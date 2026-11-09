@@ -72,14 +72,47 @@ export function toTarget(value, cwd) {
   }
   const raw = value.trim();
   if (HTTP_URL.test(raw)) return { kind: "url", url: raw };
-  if (FILE_URL.test(raw)) {
-    try {
-      return { kind: "file", path: fileURLToPath(raw) };
-    } catch {
-      throw new Error(`read_img: 不支持的 file URL：${raw}（主机名只能是 localhost 或留空）`);
-    }
-  }
+  if (FILE_URL.test(raw)) return fileTarget(raw);
   return { kind: "file", path: isAbsolute(raw) ? raw : resolvePath(cwd, raw) };
+}
+
+/**
+ * Turn a `file:` URL into a local filesystem path.
+ *
+ * The host rule is enforced here, not borrowed from `fileURLToPath`, because
+ * that function is platform-dependent: on Windows it maps a non-empty host to a
+ * UNC path (`file://server/share/x` → `\\server\share\x`) and on POSIX it
+ * throws. One rule everywhere is easier to reason about and to document: the
+ * host must be empty, which the URL parser also produces for `localhost` (the
+ * file-URL host is normalised to empty, checked on node 18/20/24). A real
+ * Windows share stays reachable by passing the UNC path itself, which
+ * `toTarget` already treats as absolute.
+ * @param {string} raw
+ * @returns {{ kind: "file", path: string }}
+ */
+function fileTarget(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw unsupportedFileUrl(raw, "不是合法的 URL");
+  }
+  if (url.hostname.length > 0) {
+    throw unsupportedFileUrl(
+      raw,
+      `主机名 "${url.hostname}" 不是本机；file URL 的主机名必须留空（file:///C:/shots/a.png）。Windows 网络共享请直接传 UNC 路径 \\\\server\\share\\x.png`,
+    );
+  }
+  try {
+    return { kind: "file", path: fileURLToPath(url) };
+  } catch {
+    throw unsupportedFileUrl(raw, "无法转换成这台机器上的路径；Windows 下需要盘符，例如 file:///C:/shots/a.png");
+  }
+}
+
+/** @param {string} raw @param {string} detail */
+function unsupportedFileUrl(raw, detail) {
+  return new Error(`read_img: 不支持的 file URL：${raw}（${detail}）`);
 }
 
 /**
