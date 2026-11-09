@@ -82,7 +82,7 @@
 ### 打包前检查（只读源码，不碰 profile）
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder
+# 站在本插件目录里（仓库 clone 在哪都行，各机器不必一致）
 pnpm check
 pnpm pack --pack-destination dist
 tar -tzf dist\dsh-subagent-wait-reminder-<版本>.tgz   # 条目带 package/ 前缀；必须含 package/lib/index.js、package/cordis.patch.yml
@@ -91,13 +91,14 @@ tar -tzf dist\dsh-subagent-wait-reminder-<版本>.tgz   # 条目带 package/ 前
 ### 安装 / 升级（每次发版递增版本号）
 
 ```powershell
-dsh plugin --profile web add "D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder\dist\dsh-subagent-wait-reminder-<版本>.tgz"
+dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-<版本>.tgz   # 用 ./ 相对路径
 ```
 
 ### 验证登记形态
 
 ```powershell
-(Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-subagent-wait-reminder" -Force).LinkType   # 空 = 普通目录（正确）
+$prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }) 'profiles/web'
+(Get-Item (Join-Path $prof 'node_modules/dsh-subagent-wait-reminder') -Force).LinkType   # 空 = 普通目录（正确）
 dsh plugin --profile web why dsh-subagent-wait-reminder
 dsh --profile web --dump-config    # 应有本包 patch 插入的 entry
 ```
@@ -107,11 +108,14 @@ dsh --profile web --dump-config    # 应有本包 patch 插入的 entry
 ### 回滚 / 卸载
 
 ```powershell
-dsh plugin --profile web add "<旧版本 tgz 绝对路径>"          # 回滚到旧版
-dsh plugin --profile web remove dsh-subagent-wait-reminder   # 彻底移除
+# 站在本插件目录里，装回本机 dist/ 中的旧版本
+dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-<旧版本>.tgz   # 回滚到旧版
+dsh plugin --profile web remove dsh-subagent-wait-reminder                    # 彻底移除
 ```
 
 不要改源码当回滚用——源码与运行副本无任何链接。
+
+**换机器**：安装包不跨机器传递，每台机器在自己的 clone 路径上重新 `pnpm pack` 再 `add`。完整五步流程见仓库根 [INSTALL.md §11 跨机器使用](../INSTALL.md#11-跨机器使用多台机器)。
 
 ### 安装记录
 
@@ -136,12 +140,14 @@ dsh plugin --profile web remove dsh-subagent-wait-reminder   # 彻底移除
 
 本次开发收尾时在源码目录更新了 README（补生产验证记录等），**安装副本里的 README 仍是打包时的旧版**——按隔离原则这无害（文档不影响行为），但两份 README 已有差异。下次因任何原因发新版本时（0.1.1+），新版会自然带上；若希望立即同步，走一遍“新版本号 → `pnpm pack` → `add`”即可。
 
-对照安装副本与源码是否一致：
+对照安装副本与源码是否一致（两行哈希相同 = 可执行代码一致；基线 `878A22AB18B45554`）：
 
 ```powershell
-foreach ($side in @("C:\Users\guwh\.dsh\profiles\web\node_modules\dsh-subagent-wait-reminder", "D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder")) {
-  $h = (Get-FileHash "$side\lib\index.js" -Algorithm SHA256).Hash.Substring(0,16)
+$prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }) 'profiles/web'
+foreach ($side in @((Join-Path $prof 'node_modules/dsh-subagent-wait-reminder'), (Get-Location).Path)) {
+  $h = (Get-FileHash (Join-Path $side 'lib\index.js') -Algorithm SHA256).Hash.Substring(0,16)
   Write-Host "$side -> lib/index.js $h"
 }
-# 两行相同 = 可执行代码一致（当前均为 878A22AB18B45554）
 ```
+
+> 上面用 `$prof` 与当前目录拼接，不含任何写死的本机路径；在插件目录里执行即可。

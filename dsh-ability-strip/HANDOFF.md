@@ -25,7 +25,9 @@
 
 ## 3. 资产地图（哈希为 SHA256 前 16 位，迁移时点快照）
 
-### 开发源码（权威）：`D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip\`
+### 开发源码（权威）：本仓库下的 `dsh-ability-strip/` 目录
+
+> 仓库 clone 位置随机器而异，本文不写死路径。哈希与字节数是机器无关的证据，可直接用于任意机器的核对。
 
 | 文件 | 哈希 | 说明 |
 |---|---|---|
@@ -40,7 +42,9 @@
 
 注：本插件最初自带的 `INSTALL.md` 已升格为**仓库根** [INSTALL.md](../INSTALL.md)（跨插件唯一权威），本插件不再单独持有；本插件的具体命令在 [README.md](README.md)「安装」节。`profile-backups\` 是改 profile 前的会话备份，git 忽略、不随包发布。
 
-### 运行副本（只读）：`C:\Users\guwh\.dsh\profiles\web\node_modules\dsh-ability-strip\`
+### 运行副本（只读）：`$DSH_HOME/profiles/web/node_modules/dsh-ability-strip/`
+
+> 默认 `$DSH_HOME` 为 `~/.dsh`；随机器而异，不写死。
 
 - `lib\client.js`、`lib\index.js` 与源码**逐字节一致**（迁移重装后哈希复核通过）。
 - `README.md` 是打包时的**英文旧版**（源码后来中文化）——有意不同步，文档不影响行为，下次发版自然带上。
@@ -80,18 +84,18 @@ pnpm check    # check-host + check-bundle-contract + check-render，必须全部
 ### 升级发版
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip
+# 站在本插件目录里
 # 1. 递增 package.json 版本号
 pnpm check
 pnpm pack --pack-destination dist
 node scripts/verify-pack.mjs dist\dsh-ability-strip-<新版本>.tgz
-dsh plugin --profile web add "D:\...\dsh-plugins\dsh-ability-strip\dist\dsh-ability-strip-<新版本>.tgz"
+dsh plugin --profile web add ./dist/dsh-ability-strip-<新版本>.tgz
 # 2. 浏览器 Ctrl+F5；页面应出现  skill | N | MCP | N
 ```
 
 ### 回滚 / 卸载
 
-- 回滚：`dsh plugin --profile web add <旧版本 tgz 绝对路径>` + `Ctrl+F5`。
+- 回滚：`dsh plugin --profile web add ./dist/dsh-ability-strip-<旧版本>.tgz` + `Ctrl+F5`（站在插件目录里）。
 - 卸载：`dsh plugin --profile web remove dsh-ability-strip`。
 - 不要改源码当回滚用——源码与运行副本无任何链接。
 
@@ -123,6 +127,7 @@ dsh plugin --profile web add "D:\...\dsh-plugins\dsh-ability-strip\dist\dsh-abil
 | 2026-11-02 | README 全文中文化 + AI 编写声明 | `4b6551c`；安装形态澄清为 tarball 拷贝，link 论述降为历史决策 |
 | 2026-11-03 | **单仓库迁移** | 解散独立 `.git`，移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节，哈希复核一致） |
 | 2026-11-04 | 远程复用与更名 | 单仓库推送回原 GitHub 仓库 `whengu/dsh-ability-strip`（不新建仓库），旧两个提交以 `-s ours` 合并保留；随后仓库更名为 `whengu/dsh-plugins` |
+| 2026-11-09 | **dsh 升级兼容复核（0.2.1-rc.5 → 0.2.2-rc.1）** | **兼容，无需改代码**。真机证据：`[data-composer-dock]` 显示 `skill 22 / MCP 28`；点击展开明细 6979 字符、三节齐全、**0 处读取失败**。契约核对：`rpc.call(channel, endpoint, payload, signal)` 与 `` `${channel}/${endpoint}`.slice(1) `` 拼接未变；`client-request`/`server-response` 信封未变；精确 Fetch 路由 `{path, methods}` 未变；基线模块名仍在 shell 模块表。**变化提醒**：`dsh-client-ui-primitives`/`-dockkit`/`-slots`/`-store` 已不再是独立 npm 包（并入 shell bundle），模块解析不受影响，但不要写进 `dependencies` 指望从磁盘解析 |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

@@ -94,26 +94,33 @@ Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`—
 ### 打包 / 安装 / 升级
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip
+# 站在本插件目录里（仓库 clone 在哪都行，各机器不必一致）
 pnpm check                                   # 三项检查，必须全部 RESULT: PASS
 pnpm pack --pack-destination dist
 node scripts/verify-pack.mjs dist\dsh-ability-strip-<版本>.tgz
-dsh plugin --profile web add "D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-ability-strip\dist\dsh-ability-strip-<版本>.tgz"
+dsh plugin --profile web add ./dist/dsh-ability-strip-<版本>.tgz   # 用 ./ 相对路径
 # 浏览器 Ctrl+F5 硬刷新（有浏览器半边，必须刷新）
 ```
 
-每次发版**递增版本号**；`dist/` 留在原地（profile 记录 tarball 绝对路径，之后 `dsh plugin install` 还要用）。卸载：`dsh plugin --profile web remove dsh-ability-strip`。
+每次发版**递增版本号**；`dist/` 留在原地（profile 记录 tarball 的本机绝对路径，之后 `dsh plugin install` 还要用）。卸载：`dsh plugin --profile web remove dsh-ability-strip`。
+
+**换机器**：安装包不跨机器传递，每台机器在自己的 clone 路径上重新 `pnpm pack` 再 `add`。完整五步流程见仓库根 [INSTALL.md §11 跨机器使用](../INSTALL.md#11-跨机器使用多台机器)。
 
 ### 验证
 
 - 页面输入框下方出现 `skill | N | MCP | N`；点击行展开明细、再点收起。
-- `(Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-ability-strip" -Force).LinkType` 为空（普通目录）。
+- 安装形态是普通目录而非源码链接（`$prof` 的取法见 [INSTALL.md §11.2](../INSTALL.md#112-新机器上手五步)）：
+  ```powershell
+  $prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }) 'profiles/web'
+  (Get-Item (Join-Path $prof 'node_modules/dsh-ability-strip') -Force).LinkType   # 空 = 普通目录
+  ```
 - `dsh plugin --profile web why dsh-ability-strip` 有记录；`dsh --profile web --dump-config` 能看到本包 entry。
 
 ### 回滚
 
 ```powershell
-dsh plugin --profile web add "<旧版本 tgz 绝对路径>"   # + Ctrl+F5
+# 站在本插件目录里，装回本机 dist/ 中的旧版本
+dsh plugin --profile web add ./dist/dsh-ability-strip-<旧版本>.tgz   # + Ctrl+F5
 ```
 
 不要改源码当回滚用——源码与运行副本无任何链接。

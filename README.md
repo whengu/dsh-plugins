@@ -8,6 +8,7 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 
 | 想了解 | 看哪里 |
 | --- | --- |
+| **换了新机器 / 多台机器怎么装** | **[INSTALL.md §11 跨机器使用](INSTALL.md#11-跨机器使用多台机器)**（安装包如何在各机器本地生成与安装） |
 | 怎么装、怎么发版、为什么不能 `link:`、报错怎么排 | **[INSTALL.md](INSTALL.md)**（跨插件唯一权威） |
 | 某个插件干什么、机制、限制、它的具体安装命令 | 该插件的 `README.md` |
 | 接手某个插件要立刻知道的事（状态、哈希、教训、决策史） | 该插件的 `HANDOFF.md` |
@@ -23,9 +24,14 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 ## 快速开始（给第一次接触本仓库的人）
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\<插件名>
-pnpm check          # 只读源码，不碰任何 profile
+git clone https://github.com/whengu/dsh-plugins.git
+cd dsh-plugins/<插件目录>
+pnpm check                                  # 只读源码，不碰任何 profile
+pnpm pack --pack-destination dist           # 在本机生成安装包
+dsh plugin --profile web add ./dist/<包名>-<版本>.tgz   # 用 ./ 相对路径，不要写绝对路径
 ```
+
+> 仓库 clone 到哪都行，各机器不必一致。**安装包必须在每台机器自己的路径上生成**，原因与完整五步流程见 [INSTALL.md §11](INSTALL.md#11-跨机器使用多台机器)。
 
 **开发时改源码，绝不影响已经安装的线上版本**——tarball 安装是解包拷贝，源码与运行副本物理隔离。要让线上更新，必须显式走一遍「递增版本号 → `pnpm pack` → `dsh plugin --profile web add`」。完整铁律与原因见 [INSTALL.md](INSTALL.md) 第 0–2 节。
 

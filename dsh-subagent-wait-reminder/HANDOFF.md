@@ -29,7 +29,9 @@
 
 ## 3. 资产地图（哈希为 SHA256 前 16 位，交接时点快照）
 
-### 开发源码（权威）：`D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder\`
+### 开发源码（权威）：本仓库下的 `dsh-subagent-wait-reminder/` 目录
+
+> 仓库 clone 位置随机器而异，本文不写死路径。哈希与字节数是机器无关的证据，可直接用于任意机器的核对。
 
 | 文件 | 哈希 | 说明 |
 |---|---|---|
@@ -46,7 +48,9 @@
 
 > **2026-11-03 单仓库迁移注记**：插件目录已移入 `default-workspace\dsh-plugins\`，profile 已从新路径重新登记（相同字节重装）。上表哈希为**迁移前快照**：`lib\index.js`、`cordis.patch.yml`、`package.json` 未动（哈希仍有效）；`README.md` 与本文的路径/引用已更新——两者哈希已变，以当前文件为准。
 
-### 运行副本（只读）：`C:\Users\guwh\.dsh\profiles\web\node_modules\dsh-subagent-wait-reminder\`
+### 运行副本（只读）：`$DSH_HOME/profiles/web/node_modules/dsh-subagent-wait-reminder/`
+
+> 默认 `$DSH_HOME` 为 `~/.dsh`；随机器而异，不写死。
 
 - `lib\index.js` = `878A22AB18B45554`，`cordis.patch.yml` = `503F34696620EF36`——**与源码逐字节一致**。
 - `package.json` = `462707F5FB4090B4`，与源码 `BD4E92680D4DC35A` 的差异**仅键序**（pnpm pack 规范化所致），字段与值完全一致（已逐字段 diff 确认）。
@@ -54,7 +58,7 @@
 
 ### profile 登记（安装状态的事实记录处）
 
-- `C:\Users\guwh\.dsh\profiles\web\package.json`：`dependencies` 中 `dsh-subagent-wait-reminder` 指向 tgz 绝对路径；`dsh.profile.bundles` 数组含本包名。
+- `$DSH_HOME/profiles/web/package.json`：`dependencies` 中 `dsh-subagent-wait-reminder` 指向**本机** tgz 绝对路径（各机器不同）；`dsh.profile.bundles` 数组含本包名。
 - 改动这两个记录的唯一合法途径是 `dsh plugin --profile web add/remove`，**禁止手工编辑**。
 
 ## 4. 工作机制速览（细节与源码行号见 README「机制」表）
@@ -101,18 +105,18 @@
 ### 升级发版
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\dsh-subagent-wait-reminder
+# 站在本插件目录里
 # 1. 改代码 → package.json 递增版本号（如 0.1.1）
 pnpm check
 pnpm pack --pack-destination dist
 tar -tzf dist\dsh-subagent-wait-reminder-0.1.1.tgz     # 应含 package/lib/index.js、package/cordis.patch.yml
-dsh plugin --profile web add "D:\...\dist\dsh-subagent-wait-reminder-0.1.1.tgz"
+dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-0.1.1.tgz
 # 验证：dispatch 一次看提醒；LinkType 为空；dsh plugin --profile web why 有记录
 ```
 
 ### 回滚 / 卸载
 
-- 回滚到旧版：`dsh plugin --profile web add <旧版本 tgz 绝对路径>`。
+- 回滚到旧版：`dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-<旧版本>.tgz`（站在插件目录里）。
 - 彻底移除：`dsh plugin --profile web remove dsh-subagent-wait-reminder`。
 - 不要改源码当回滚用——源码与运行副本无任何链接。
 
@@ -132,7 +136,7 @@ dsh plugin --profile web add "D:\...\dist\dsh-subagent-wait-reminder-0.1.1.tgz"
 |---|---|---|
 | 后台 job 轮询不覆盖 | `pwsh run_in_background`/`job_output` 是另一条循环，防轮询只有系统提示层（与子智能体改造前同样弱点） | 观察到 job 轮询成瘾时，把对应工具名加进 `POLL_TOOLS` 并写专属文案 |
 | per-agent 变体注册的工具名 | 按 agent 变体注册导致名字不同时不命中 | 同步更新 `DISPATCH_TOOLS`/`POLL_TOOLS` |
-| `list_agents` 无改名兜底 | 名字硬编码（list-agents.js:43-45），当前运行时无改名路径 | 若未来出现配置项，补对应检测 |
+| `list_agents` 无改名兜底 | 名字硬编码（`dsh-tool-subagent-control` 中 `name: "list_agents"`，0.2.2-rc.1 实测仍在 `lib\index.js`），当前运行时无改名路径 | 若未来出现配置项，补对应检测 |
 | 源码 README 超前于安装副本 | 收尾补文档所致，文档差异不影响行为 | 下次发版自然同步；急同步则重走发版流程 |
 | 提醒只到「下一步」 | 提醒是轻推不是硬闸：模型仍可能无视它继续轮询（无运行时拦截） | 备选硬方案 `tools.guard` 直接拒 `list_agents`——被 v1 评审否决（与需求 5「不拦截任何调用」冲突）；若未来要硬闸，需先改需求 |
 
@@ -151,6 +155,7 @@ dsh plugin --profile web add "D:\...\dist\dsh-subagent-wait-reminder-0.1.1.tgz"
 | 2026-11-03 | 开发收尾 | README 补生产验证记录、故障排查、覆盖边界；本文交接 |
 | 2026-11-03 | 单仓库迁移 | 目录移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节重装，安装副本 `lib\index.js` 哈希仍为 `878A22AB18B45554`）；跨插件规约引用改为仓库根 `..\INSTALL.md` |
 | 2026-11-04 | 文档归属纠正 | 规约收入仓库根 `INSTALL.md`；曾经抽出的插件级 `INSTALL.md` 撤销，命令并回 [README.md](README.md)「安装」节（同一主题不再两处维护） |
+| 2026-11-09 | **dsh 升级兼容复核（0.2.1-rc.5 → 0.2.2-rc.1）** | **兼容，无需改代码**。功能证据：派发子智能体后立即收到本插件注入的 `<system-reminder>`，注入链路完整。契约核对：`tools/post-execute` 签名 `(exec, result, next)` 未变（api-catalog L5220）；`PostToolDecision.additionalContexts` 未变；`ToolExecutionInput.name`/`.agent`、`ToolExecutionSuccess.isError`/`.content` 未变；`started subagent ` 兜底文本未变（dsh-tool-subagent）；`list_agents` 工具名未变（`name: "list_agents"`）；官方 `dsh-repeat-tool-reminder` 仍用同一套 API。**文档漂移**：§6 曾引用 `dsh-tool-subagent-control/lib/types/list-agents.js`，该子路径已变为 `lib/index.js`（包与工具名均未变） |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

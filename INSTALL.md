@@ -79,7 +79,7 @@ $DSH_HOME/profiles/web/node_modules/<包名>/   （运行副本：Host/浏览器
 ### 第 1 步：改源码，只跑本地检查
 
 ```powershell
-cd D:\Users\guwh\Documents\deepseek-harness\default-workspace\dsh-plugins\<插件名>
+cd <仓库目录>/<插件目录>          # 仓库 clone 在哪都行，不必各机器一致
 node --check lib\<每个 .js 文件>   # 语法（宿主插件查 lib\index.js，双半边插件还要查 lib\client.js）
 pnpm check                        # 项目自带的检查（必须全过）
 ```
@@ -101,8 +101,8 @@ pnpm pack --pack-destination dist
 # 有 verify-pack 脚本的插件跑一遍校验
 node scripts/verify-pack.mjs dist\<包名>-<新版本>.tgz
 
-# 2. 装进线上 profile
-dsh plugin --profile web add "D:\...\dsh-plugins\<插件名>\dist\<包名>-<新版本>.tgz"
+# 2. 装进线上 profile（站在插件目录里，用 ./ 相对路径）
+dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
 
 # 3. 浏览器 Ctrl+F5 硬刷新（纯 Host 侧插件不需要）
 ```
@@ -112,7 +112,8 @@ dsh plugin --profile web add "D:\...\dsh-plugins\<插件名>\dist\<包名>-<新�
 旧版本的 tarball 还留着，直接装回旧包即可（不要试图改回源码）：
 
 ```powershell
-dsh plugin --profile web add "<绝对路径>\dist\<包名>-<旧版本>.tgz"
+# 站在插件目录里
+dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
 ```
 
 ---
@@ -120,17 +121,17 @@ dsh plugin --profile web add "<绝对路径>\dist\<包名>-<旧版本>.tgz"
 ## 4. 正式安装步骤（线上 profile）
 
 ```powershell
-cd D:\...\dsh-plugins\<插件名>
+cd <仓库目录>/<插件目录>
 pnpm pack --pack-destination dist
 tar -tzf dist\<包名>-<版本>.tgz        # 确认 lib/、cordis.patch.yml 都在
-dsh plugin --profile web add "D:\...\dsh-plugins\<插件名>\dist\<包名>-<版本>.tgz"
+dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 # 浏览器 Ctrl+F5（有浏览器半边的插件）
 ```
 
 要点：
 
 - **`--profile` 必填**，且必须和实际启动的 profile 一致（`dsh web` 就是 `dsh --profile web` 的简写，所以安装时用 `--profile web`）。
-- 本地路径写**绝对路径**并加引号；命令行会按当前目录解析 `./`，但绝对路径最稳，GUI 安装入口只接受绝对路径。
+- **路径写法**：站在插件目录里用 `./dist/<包名>-<版本>.tgz`。CLI 会把以 `.`/`..` 开头的路径按当前目录锚定成绝对路径再交给 pnpm；**裸相对路径（`dist/x.tgz`）不会被锚定**，会解析到 profile 目录而失败。绝对路径也能用，但不要写进文档或脚本——各机器路径不同。
 - `dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，然后：检查 `engines.dsh` 兼容性 → 把声明了 `dsh.bundle.patch` 的包追加进 `dsh.profile.bundles`。
 - 第一次对不存在的 profile 名执行会自动初始化一个空 profile——这很容易造成「装到了幽灵 profile、页面永远没效果」的困惑。务必用实际启动的那个 profile 名；**不要为了测试新建 profile**。
 - Host **不需要重启**：`dsh-hmr` 监视 profile 清单并重组层；但浏览器按 bundle revision 缓存客户端代码，必须 `Ctrl+F5` 硬刷新。
@@ -182,15 +183,16 @@ dsh --profile web --dump-config     # 输出里应能看到该包 patch 插入�
 
 ```powershell
 # 升级：改版本号 → 打包 → 重新 add（同名包原地替换安装副本）
+# 以下命令都在插件目录里执行
 pnpm pack --pack-destination dist
-dsh plugin --profile web add "<绝对路径>\dist\<包名>-<新版本>.tgz"
+dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
 
 # 卸载
 dsh plugin --profile web remove <包名>
 ```
 
 - **每次发布都递增版本号**，保证 tarball 文件名唯一；不要用同一个文件名覆盖已发布的包。
-- `dist/` 不能删：profile 的 `dependencies` 记录的是 tarball 的绝对路径，之后执行 `dsh plugin install` 还需要这个文件存在。
+- `dist/` 不能删：profile 的 `dependencies` 记录的是 tarball 的**本机绝对路径**，之后执行 `dsh plugin install` 还需要这个文件存在。跨机器时 `dist/` 各自独立（见第 11 节）。
 - 卸载后同样 `Ctrl+F5`（有浏览器半边的插件）。
 
 ---
@@ -350,7 +352,189 @@ dsh-plugins/                       ← 插件单仓库（git）
 
 ---
 
-## 11. 特殊场景
+## 11. 跨机器使用（多台机器）
+
+**核心结论：安装包不跨机器传递。每台机器在自己的路径上，从同一份 git 源码打包。**
+
+路径问题不是被"解决"，而是被**消灭**——profile 记录的是本机自己的绝对路径，从来没有跨机器共享过任何路径。
+
+### 11.1 为什么不能把 tgz / profile 复制到别的机器
+
+profile 的 `package.json` 里，依赖值形如 `file:<绝对路径>.tgz`，且之后的 `dsh plugin install` 依赖这个文件**在原地存在**。那个绝对路径是本机专属的：
+
+- A 机器 clone 到 `<A 的目录>/dsh-plugins`，记录的就是那条路径；
+- B 机器 clone 到 `<B 的目录>/dsh-plugins`（可以是完全不同的盘符或路径风格），记录的必然是另一条。
+
+所以本文和仓库里任何脚本都**不出现具体路径**——一律用占位符或 `./` 相对路径。
+
+所以：
+
+| 做法 | 结果 |
+| --- | --- |
+| 把 A 的 `dist/*.tgz` 拷到 B 再 `add` | **可以**，前提是在 B 上用 B 自己的路径 `add`（拷贝路径无所谓，`add` 时的路径才被记录） |
+| 把 A 的 profile `package.json` 拷到 B | **不可行**：里面全是 A 的绝对路径，B 上必然失效 |
+| 把 A 的 `dist/` 目录整体搬进 B 的仓库位置 | **不必要**：B 自己 `pnpm pack` 几秒就有 |
+
+### 11.2 新机器上手（五步）
+
+前提：本机已装 `node` / `pnpm` / `git` / `dsh`。本机实测可用组合：node `v24.18.1`、pnpm `12.9.1`、dsh `0.2.2-rc.1`。
+
+**第 1 步：clone（目录位置随意，各机器不必一致）**
+
+```powershell
+git clone https://github.com/whengu/dsh-plugins.git
+cd dsh-plugins
+```
+
+**第 2 步：把每个插件都跑一遍校验**
+
+```powershell
+cd dsh-ability-strip              # 或其他插件目录
+pnpm check                        # 必须通过
+cd ..
+cd dsh-subagent-wait-reminder
+pnpm check
+cd ..
+```
+
+**第 3 步：在本机打包（产物落在本机 `dist/`）**
+
+```powershell
+cd dsh-ability-strip
+pnpm pack --pack-destination dist
+cd ..
+cd dsh-subagent-wait-reminder
+pnpm pack --pack-destination dist
+cd ..
+```
+
+产物：`dist/<包名>-<版本>.tgz`。版本号来自源码（见 11.4），不需要手动填。
+
+**第 4 步：安装——用 `./` 相对路径，不要写绝对路径**
+
+```powershell
+cd dsh-ability-strip
+dsh plugin --profile web add ./dist/dsh-ability-strip-0.3.0.tgz
+cd ..
+cd dsh-subagent-wait-reminder
+dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-0.1.0.tgz
+cd ..
+```
+
+**为什么 `./` 可以，裸相对路径不行**：
+
+- CLI 只把以 `.` 或 `..` 开头的路径按**调用时的当前目录**解析成绝对路径，再交给 pnpm（`anchorPathSpec` 只匹配 `\.{1,2}`）。实测：失败信息里显示的是解析后的完整本机路径，证明锚定生效。
+- `dist/x.tgz` 这种**不带 `./`** 的写法不会被锚定，而 pnpm 是在 **profile 目录**里运行的，会解析到错误位置。
+
+所以规则是：**站在插件目录里，用 `./dist/<包名>-<版本>.tgz`**。全程不出现任何机器特定路径。
+
+**第 5 步：验证**
+
+```powershell
+dsh plugin --profile web why <包名>          # 应有记录
+dsh --profile web --dump-config              # 应有该包的 entry，且无 skipping 警告
+```
+
+再看安装形态（`<包名>` 换成实际包名；profile 目录见下方说明）：
+
+```powershell
+$prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }) 'profiles/web'
+(Get-Item (Join-Path $prof "node_modules/<包名>") -Force).LinkType    # 输出为空 = 普通目录（正确）
+```
+
+> profile 位置的通用规则是 `$DSH_HOME/profiles/<profile>`，默认 `~/.dsh/profiles/<profile>`。上面用环境变量拼接，避免写死任何具体路径；POSIX shell 下等价于 `${DSH_HOME:-$HOME/.dsh}/profiles/web`。
+
+最后做功能验证：
+
+| 插件 | 怎么确认它在工作 |
+| --- | --- |
+| `dsh-ability-strip` | 浏览器 `Ctrl+F5`，输入框下方出现 `skill N \| MCP N`，点击行展开明细 |
+| `dsh-subagent-wait-reminder` | 派发一个子智能体，派发结果后应紧跟一条 user 角色 `<system-reminder>`；纯 Host 侧，不需要刷新浏览器 |
+
+Host 不需要重启（`dsh-hmr` 监视 profile 清单并重组层）；有浏览器半边的插件必须硬刷新。
+
+### 11.3 升级（每台机器各自做，版本号由 git 同步）
+
+```powershell
+git pull
+cd <插件目录>
+pnpm check
+pnpm pack --pack-destination dist
+dsh plugin --profile web add ./dist/<包名>-<新版本>.tgz
+```
+
+**关键：版本号不需要每台机器各改一次。** 版本号写在源码的 `package.json` 里，随 git 同步。发起人在自己机器上递增版本号并 push，其他机器 `git pull` 后打出来的就是新版本号，直接 `add` 即可。
+
+### 11.4 回滚（每台机器各自做）
+
+两条路，按本机有没有那个版本的 tgz 选：
+
+```powershell
+# 路 1：本机 dist/ 里还有旧版本 tgz（最快）
+dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
+
+# 路 2：本机没打过那个版本——退到旧提交再打包
+git checkout <旧提交>
+cd <插件目录>
+pnpm pack --pack-destination dist
+dsh plugin --profile web add ./dist/<包名>-<旧版本>.tgz
+git checkout -                       # 回到原分支
+# 打完包就切回，旧 tgz 已在 dist/ 里，dist/ 不进 git 不受影响
+```
+
+⚠️ **`dist/` 不在 git 里**，所以每台机器的 `dist/` 只保留**本机打过的包**。A 机器打过 0.2.9、B 机器没打过，B 就没有那个 tgz，只能走路 2。这是把 `dist/` 排除出版本的代价，换来的是仓库干净。
+
+### 11.5 仓库换位置 / 机器迁移
+
+profile 记录的是旧绝对路径，仓库一移动，那条记录就失效（`dsh plugin install` 会报找不到文件）。处理方式**只有一条**：
+
+```powershell
+cd <新位置的插件目录>
+pnpm pack --pack-destination dist
+dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
+```
+
+不要手工编辑 profile 的 `package.json` 或 `pnpm-lock.yaml`——`add` 是唯一合法途径，它会同时更新依赖、lockfile 和 `dsh.profile.bundles`。
+
+### 11.6 可选：要「各机器字节完全相同的包」
+
+本机打包在**相同源码 + 相同 pnpm 版本**下是可复现的。实测依据：
+
+- 同一机器连续两次 `pnpm pack`，字节完全一致；
+- tarball 内部的 mtime 被规范化为固定值（1985-10-26 的 npm 幻数），不是真实文件时间；
+- tarball 内路径全是 `package/...` 相对路径，不含任何本机路径。
+
+但 pnpm / Node 版本不同时，压缩结果可能不同（内容一致、字节可能不同）。若确实需要跨机器字节一致，或者想省掉打包步骤，用 **git 源直接安装**：
+
+```powershell
+dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<40 位 commit SHA>&path:/<插件目录>"
+```
+
+实测行为（2026-11-09）：安装成功；产物是**副本**——符号链接指向 pnpm store（`node_modules/.pnpm/...`）而**不是**源码树，内容哈希与源码一致；在 profile 现用的 `nodeLinker: hoisted` 下是普通目录（`LinkType` 为空），与 tarball 安装形态一致，隔离性不打折。
+
+**为什么不把它作为默认**：
+
+| 维度 | 本机打包后安装（默认） | git 源直接安装 |
+| --- | --- | --- |
+| 离线可用 | ✅ 完全不联网 | ❌ 每次安装都要网络 + git |
+| 版本标识 | semver（`0.3.0`），与 `dist/` 文件名对应 | commit SHA |
+| 回滚 | 装回旧版本 tgz，直白 | 需知道旧 SHA |
+| 依赖 | 只需 pnpm | pnpm + git + 网络 |
+| 额外步骤 | 一次 `pnpm pack`（秒级） | 无 |
+
+结论：**默认用本机打包**；git 源安装作为「新机器最快冷启动」或「需要字节级一致」时的备选。
+
+### 11.7 跨机器绝对不要做的事
+
+- ❌ 跨机器复制 profile 的 `package.json` / `pnpm-lock.yaml`（里面是另一台机器的绝对路径）
+- ❌ 在脚本或文档里写死本机绝对路径（换机器/换目录即失效）
+- ❌ 用 `link:` 或目录安装（源码即线上，见第 1 节）
+- ❌ 把 `dist/` 提交进 git（`.gitignore` 已排除；需要分发就走 11.6 的办法）
+- ❌ 为了测试新建 profile（见第 4 节）
+
+---
+
+## 12. 特殊场景
 
 ### 桌面版（Desktop）
 
@@ -362,7 +546,7 @@ dsh-plugins/                       ← 插件单仓库（git）
 
 ---
 
-## 12. 机制出处（便于核对）
+## 13. 机制出处（便于核对）
 
 - `@deepseek-ai/dsh/lib/bin.js` — `parseDshArgs`：`plugin` 子命令，`--profile` 为 requiredOption，其余参数原样转发 pnpm。
 - `@deepseek-ai/dsh/lib/plugin-*.js` — `runPlugin`：调用 `runPluginCommand`；pnpm 缺失（exit 127）与不兼容包（`allow-version` 提示）在这一层输出。
@@ -374,7 +558,7 @@ dsh-plugins/                       ← 插件单仓库（git）
 
 ---
 
-## 13. 各插件的具体命令
+## 14. 各插件的具体命令
 
 本文件只写跨插件规约。每个插件的打包 / 安装 / 验证 / 回滚命令写在该插件 README 的「安装」节，避免两处维护：
 
