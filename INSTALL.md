@@ -743,3 +743,22 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 > Changes affect every session in that profile and survive restart.
 
 > Every `plugin_manager` action … also needs approval without Full access, so call it only when its result decides the next step.
+
+### 15.7 换行、哈希与 `verify-pack`（踩过一次坑）
+
+**现象**：安装 0.4.0 后复核，安装副本的 `lib/index.js` 与工作区**哈希不一致**（`lib/client.js` 却一致）。排查结论：
+
+- 本机 `core.autocrlf = true`，git 在提交/rebase 时把工作区写成 **CRLF**；而 tarball 里该文件是 **LF**。
+- 两者**归一化换行后内容完全相同**（哈希 `E3E8BDD6FBB46C92` 一致），文件反而变大（15557 → 15952 B，多出 395 个 `\r`）。
+- 后果不是功能问题（JS 不关心换行），而是**证据链假失败**：`verify-pack` 逐字节比对会报 `CONTENT DIFFERS`，HANDOFF 里当证据的哈希也会因机器/检出方式而漂移。
+
+**已做的修复**：
+
+1. 新增 `.gitattributes`：`* text=auto eol=lf`，让工作区在**所有平台**都与仓库 blob 一致，二进制（`*.png` 等）不参与换行转换。
+2. `verify-pack.mjs` 的 `sameText` 扩展为**忽略换行风格 + 末尾换行**；`exact` 仍严格比对字节，命中时仍会显示 `exact`。
+
+**遗留与注意**：
+
+- 本次没有强行把已存在的工作区文件重排为 LF（`git checkout-index` 不会重写内容等价的文件）。所以**当前这棵工作区仍是 CRLF**，而 tarball 混了两种形式（`client.js` 为 CRLF、`index.js` 为 LF）。
+- 因此：**HANDOFF 里的哈希记录各自对应其 tarball 的实际形式，跨换行比较会不一致**。核对哈希时要么按 LF 归一，要么用 `verify-pack`（它已忽略换行）。
+- 新克隆/新机器会得到干净的 LF 工作区；下一次发版打出的 tarball 也是纯 LF，之后的哈希记录才真正稳定。
