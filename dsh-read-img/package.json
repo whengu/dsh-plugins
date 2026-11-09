@@ -1,6 +1,6 @@
 {
   "name": "dsh-read-img",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "One tool for DeepSeek Harness: read a local image file with an external OpenAI-compatible vision model. No hooks, no bridge, no UI.",
   "type": "module",

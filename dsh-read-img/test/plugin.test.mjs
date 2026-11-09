@@ -50,6 +50,8 @@ test("normalizeConfig: fills defaults and keeps explicit values", () => {
   assert.equal(normalized.maxTokens, 20_000);
   assert.equal(normalized.thinking, false);
   assert.deepEqual(normalized.hideTools, ["read_image"]);
+  assert.equal(normalized.hideTools === DEFAULTS.hideTools, false, "defaults must not be aliased");
+  assert.equal(Object.isFrozen(DEFAULTS.hideTools), true, "the shared default array is frozen");
 
   const custom = normalizeConfig({ model: "x/vision", maxTokens: 99, enabled: false, thinking: true });
   assert.equal(custom.model, "x/vision");
@@ -177,4 +179,25 @@ test("reader: a cache hit still reports the path the caller asked for", async ()
   assert.match(first, /\(image: \/one\/a\.png\)/);
   assert.match(second, /\(image: \/two\/b\.png\)/);
   assert.equal(calls.length, 1, "same bytes must share one vision call");
+});
+
+test("apply: a disabled plugin registers neither the tool nor the hider", () => {
+  const registered = [];
+  const events = [];
+  const ctx = {
+    tools: { register: (definition) => registered.push(definition) },
+    llm: { stream: () => "stream" },
+    on: (event) => events.push(event),
+    inject(_deps, callback) {
+      callback(ctx);
+    },
+  };
+
+  apply(ctx, { enabled: false });
+  assert.equal(registered.length, 0);
+  assert.deepEqual(events, []);
+
+  apply(ctx, { enabled: true });
+  assert.equal(registered.length, 1);
+  assert.deepEqual(events.sort(), ["llm/stream", "tools/pre-execute"]);
 });

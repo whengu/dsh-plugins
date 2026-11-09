@@ -3,6 +3,9 @@
  * `/chat/completions` with a text part and an `image_url` part.
  */
 
+/** Refuse absurd response bodies before reading them into memory. */
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
 /** Error whose message is safe to show to the model verbatim. */
 export class VisionError extends Error {
   /**
@@ -94,13 +97,24 @@ export async function callVision(config, imageUrl, question, signal, fetchImpl =
       signal: requestSignal(signal, config.timeoutMs),
     });
   } catch (error) {
-    const reason =
-      error?.name === "TimeoutError" || error?.name === "AbortError"
-        ? `超时或已取消（上限 ${config.timeoutMs}ms）`
+    // Caller cancellation and our own deadline both surface as a rejected
+    // fetch; only the caller's signal can tell them apart, and reporting a
+    // cancel as a timeout makes the model retry a request the user killed.
+    const cancelled = signal?.aborted === true || error?.name === "AbortError";
+    const reason = cancelled
+      ? "已取消"
+      : error?.name === "TimeoutError"
+        ? `超时（上限 ${config.timeoutMs}ms）`
         : (error?.message ?? String(error));
     throw new VisionError(`read_img: 无法完成对 ${endpoint} 的请求：${reason}`, { cause: error });
   }
 
+  const declared = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new VisionError(
+      `read_img: 视觉端点响应 ${declared} 字节，超过上限 ${MAX_RESPONSE_BYTES}；拒绝读取。`,
+    );
+  }
   const raw = await response.text();
   if (!response.ok) {
     throw new VisionError(`read_img: 视觉端点返回 HTTP ${response.status}：${raw.slice(0, 300)}`);

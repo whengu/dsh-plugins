@@ -80,13 +80,30 @@ test("callVision: rejects non-JSON responses", async () => {
   await assert.rejects(callVision(CONFIG, "data:image/png;base64,AAA", "", undefined, impl), /不是 JSON/);
 });
 
-test("callVision: reports timeouts and network failures with the endpoint", async () => {
+test("callVision: reports our own deadline as a timeout", async () => {
   const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
   const { impl } = stubFetch({ throwError: timeout });
   await assert.rejects(
     callVision(CONFIG, "data:image/png;base64,AAA", "", undefined, impl),
-    /无法完成对 http:\/\/vision\.test\/v1\/chat\/completions 的请求：超时或已取消/,
+    /无法完成对 http:\/\/vision\.test\/v1\/chat\/completions 的请求：超时（上限 5000ms）/,
   );
+});
+
+test("callVision: reports caller cancellation as cancelled, not as a timeout", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const aborted = Object.assign(new Error("aborted"), { name: "AbortError" });
+  const { impl } = stubFetch({ throwError: aborted });
+  await assert.rejects(
+    callVision(CONFIG, "data:image/png;base64,AAA", "", controller.signal, impl),
+    /请求：已取消/,
+  );
+});
+
+test("callVision: refuses an oversized response before reading it", async () => {
+  const impl = async () =>
+    new Response("{}", { status: 200, headers: { "content-length": String(5 * 1024 * 1024) } });
+  await assert.rejects(callVision(CONFIG, "data:image/png;base64,AAA", "", undefined, impl), /响应 5242880 字节/);
 });
 
 test("requestSignal: always has a deadline, and honours caller cancellation", () => {

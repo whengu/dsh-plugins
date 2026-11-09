@@ -4,8 +4,11 @@
  *
  * The deployed chat models are text-only. When the agent takes a screenshot or
  * is handed an image path, this tool is how it learns what the picture
- * contains. Nothing else is registered: no prompt rewriting, no message hooks,
- * no bridge, no UI.
+ * contains. No prompt rewriting, no message rewriting, no bridge, no UI.
+ *
+ * The single opt-out exception is the tool hider (`hideTools`): it drops names
+ * this deployment cannot use from the request's tool declarations and refuses
+ * them if called. It fails open and is disabled by an empty list.
  */
 
 import { createHash } from "node:crypto";
@@ -31,7 +34,7 @@ export const DEFAULTS = Object.freeze({
   timeoutMs: 120_000,
   maxImageBytes: 10 * 1024 * 1024,
   thinking: false,
-  hideTools: ["read_image"],
+  hideTools: Object.freeze(["read_image"]),
   prompt: "详细描述这张图片的内容；如果图中有文字，逐字转录。",
 });
 
@@ -86,7 +89,11 @@ export function normalizeConfig(config) {
     timeoutMs: Number(pick("timeoutMs")),
     maxImageBytes: Number(pick("maxImageBytes")),
     thinking: pick("thinking") === true,
-    hideTools: Array.isArray(raw.hideTools) ? raw.hideTools.filter((n) => typeof n === "string" && n.length > 0) : DEFAULTS.hideTools,
+    // Always a fresh array: callers may sort or splice it, and the module-level
+    // default must not be aliased into a live config.
+    hideTools: Array.isArray(raw.hideTools)
+      ? raw.hideTools.filter((n) => typeof n === "string" && n.length > 0)
+      : [...DEFAULTS.hideTools],
     prompt: String(pick("prompt")),
   };
   assertPositive(normalized.maxTokens, "maxTokens");

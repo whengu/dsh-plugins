@@ -1,7 +1,7 @@
 # HANDOFF：dsh-read-img 交接文档
 
 > 交接目标：读完本文 + [README.md](README.md)，接手者应能在**不问任何历史问题**的前提下维护、升级、回滚本插件。
-> 本文写于 2026-11-09，快照基线：dsh `0.2.2-rc.1`、Linux 容器、profile `web`、版本 `0.1.4`。
+> 本文写于 2026-11-09，快照基线：dsh `0.2.2-rc.1`、Linux 容器、profile `web`、版本 `0.1.5`。
 
 ## 1. 这是什么，为什么存在
 
@@ -13,7 +13,7 @@
 
 **方案要点**：
 
-- 一个工具、零 hook、零浏览器半边、零设置页；
+- 一个工具、零浏览器半边、零设置页；唯一的 hook 是可关闭的工具隐藏器（见决策 6）；
 - 端点参数走 profile 的 `cordis.patch.yml`；
 - 失败一律变成带原因的工具错误，不让整轮失败；
 - 结果按「内容 sha256 + 问题」缓存 64 条。
@@ -22,11 +22,11 @@
 
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile，版本 `0.1.4`，2026-11-09 以 tarball 安装（`file:/plugins/dist/dsh-read-img-0.1.4.tgz`，该路径是安装时的 staging 路径） |
+| 安装 | `web` profile，版本 `0.1.5`，2026-11-09 以 tarball 安装（`file:/plugins/dist/dsh-read-img-0.1.5.tgz`，该路径是安装时的 staging 路径） |
 | 装载 | `include:read-img`，`fiberPhase: active`，热加载，未重启 |
 | 静态检查 | `pnpm check` 通过（4 个 lib 文件语法 + 包契约 + patch 契约） |
-| 离线用例 | 32/32 通过（`pnpm test`，零依赖） |
-| 插件用例 | 10/10 通过（`pnpm test:plugin`，需宿主包可解析） |
+| 离线用例 | 37/37 通过（`pnpm test`，零依赖） |
+| 插件用例 | 11/11 通过（`pnpm test:plugin`，需宿主包可解析） |
 | live 用例 | 1/1 通过（`pnpm test:live`，真实端点，2.8s） |
 | 应用内探针 | 通过：绝对路径、相对路径、错误路径；报错后工具仍可用 |
 | 上下文占用 | 1 个工具，schema 约 1 KB（约 250 tokens） |
@@ -38,13 +38,13 @@
 
 | 文件 | 哈希 | 字节 | 说明 |
 |---|---|---|---|
-| `lib/index.js` | `65443FDAA444D7BD` | 8837 | 入口：Config、normalizeConfig、createReader、工具注册、隐藏器装配 |
+| `lib/index.js` | `8A795861F86AAA40` | 9207 | 入口：Config、normalizeConfig、createReader、工具注册、隐藏器装配 |
 | `lib/hide-tools.js` | `C435DB9498F0A61E` | 2744 | `llm/stream` 声明过滤 + `tools/pre-execute` 兜底，fail-open |
-| `lib/image.js` | `CF69D294687FF3E0` | 3368 | 路径分类、magic bytes 嗅探、读文件与大小限制 |
-| `lib/vision.js` | `F2883945BD765940` | 4031 | `/chat/completions` 调用、思考开关、响应解析、超时与取消 |
+| `lib/image.js` | `A87F105826FD8782` | 3751 | 路径分类、magic bytes 嗅探（魔数优先）、读文件与大小限制 |
+| `lib/vision.js` | `2252F97115172D10` | 4729 | `/chat/completions` 调用、思考开关、响应解析、超时/取消区分、响应体上限 |
 | `lib/cache.js` | `B69516358F81ADB0` | 1058 | 有界 LRU |
 | `cordis.patch.yml` | `B1FEFEEF97C6F147` | 282 | bundle patch（id `read-img` / name `dsh-read-img`） |
-| `package.json` | `B6F226B5F2869B96` | 1361 | `dsh.bundle.patch` + `engines.dsh` + files 白名单 |
+| `package.json` | `215DCB09873498C5` | 1361 | `dsh.bundle.patch` + `engines.dsh` + files 白名单 |
 | `scripts/check.mjs` | `B0251997306DE2DF` | 3738 | `pnpm check`：语法 + 包契约 + patch 契约 |
 
 ### 运行副本
@@ -102,7 +102,24 @@
 
 「粘图」与「读本地文件」看着相似，架构差一整层。设计前用一句话确认场景，比事后重写便宜。
 
-## 5. 维护手册
+## 5. 评审记录（v1，2026-11-09，0.1.4 → 0.1.5）
+
+一次完整的代码评审（5 个源文件 + 4 个测试文件 + check 脚本 + 包/patch 契约 + 文档一致性），发现并修复：
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | `normalizeConfig` 把 `DEFAULTS.hideTools` 的数组引用直接返回，调用方 `push/sort` 会污染模块级默认值 | `DEFAULTS.hideTools` 冻结，normalize 每次都拷贝 |
+| P1 | README/HANDOFF 仍写「零 hook / 没有任何 hook」，与 0.1.4 新增的 `llm/stream` 隐藏器不符 | 改成「唯一例外是工具隐藏器」并在决策 6 说明 |
+| P2 | `file://` 带主机名时抛裸 `ERR_INVALID_FILE_URL_HOST` | 包一层，输出 `read_img: 不支持的 file URL：…` |
+| P2 | 调用方 abort 被报成「超时」（`AbortError` 与 `TimeoutError` 共用文案） | 先判 `signal.aborted`，输出「已取消」 |
+| P2 | 媒体类型以扩展名优先，`.png` 实为 JPEG 时错标 | 改为魔数优先、扩展名兜底 |
+| P2 | 响应体无上限 | `content-length` 超过 4 MB 直接拒绝 |
+| P3 | 无重试、fail-open 无遥测 | 有意不做：端点稳定，遥测会引入日志噪音 |
+| P3 | 测试缺口：重入终止、`enabled:false` | 已补两个用例 |
+
+结论：无阻断问题；上述 P1/P2 已在 0.1.5 全部修复，用例 32→37、10→11。
+
+## 6. 维护手册
 
 ### 改端点 / 换模型 / 换 key
 
@@ -126,10 +143,10 @@
 
 按仓库根 [INSTALL.md §11](../INSTALL.md#11-跨机器使用多台机器)：本机重新 `pnpm pack` 后 `add`，或用 git 源直装（`path:/dsh-read-img`）。
 
-## 6. 验收清单（接手时逐条打勾）
+## 7. 验收清单（接手时逐条打勾）
 
 - [ ] `pnpm check` 通过
-- [ ] `pnpm test` 32/32
+- [ ] `pnpm test` 37/37
 - [ ] （有 dsh 的机器）`pnpm test:plugin` 10/10
 - [ ] （可选）`pnpm test:live` 1/1，需要 `VISION_BASE` / `VISION_KEY` / `VISION_MODEL`
 - [ ] `dsh --profile web --dump-config` 里有 `- id: read-img` 且 config 完整

@@ -53,7 +53,10 @@ export function sniffMime(bytes) {
  * @returns {string}
  */
 export function mimeOf(filePath, bytes) {
-  return MIME_BY_EXT.get(extname(filePath).toLowerCase()) ?? sniffMime(bytes) ?? "image/png";
+  // Magic bytes first: a `.png` that actually holds JPEG or WebP is common
+  // (screenshot tools rewrite extensions), and the endpoint rejects a wrong
+  // media type. The extension is the fallback, `image/png` the last resort.
+  return sniffMime(bytes) ?? MIME_BY_EXT.get(extname(filePath).toLowerCase()) ?? "image/png";
 }
 
 /**
@@ -69,7 +72,13 @@ export function toTarget(value, cwd) {
   }
   const raw = value.trim();
   if (HTTP_URL.test(raw)) return { kind: "url", url: raw };
-  if (FILE_URL.test(raw)) return { kind: "file", path: fileURLToPath(raw) };
+  if (FILE_URL.test(raw)) {
+    try {
+      return { kind: "file", path: fileURLToPath(raw) };
+    } catch {
+      throw new Error(`read_img: 不支持的 file URL：${raw}（主机名只能是 localhost 或留空）`);
+    }
+  }
   return { kind: "file", path: isAbsolute(raw) ? raw : resolvePath(cwd, raw) };
 }
 

@@ -41,6 +41,15 @@ test("toTarget: classifies plain paths, file URLs and http URLs", () => {
   });
 });
 
+test("mimeOf: magic bytes beat a misleading extension", () => {
+  assert.equal(mimeOf("/tmp/shot.png", JPEG), "image/jpeg");
+  assert.equal(mimeOf("/tmp/shot.jpg", PNG), "image/png");
+});
+
+test("toTarget: a file URL with a host is refused with a readable message", () => {
+  assert.throws(() => toTarget("file://server/share/a.png", "/w"), /不支持的 file URL/);
+});
+
 test("toTarget: rejects empty and non-string values", () => {
   assert.throws(() => toTarget("", "/work"), /path is required/);
   assert.throws(() => toTarget("   ", "/work"), /path is required/);

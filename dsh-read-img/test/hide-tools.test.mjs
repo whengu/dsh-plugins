@@ -122,3 +122,25 @@ test("tools/pre-execute: other tools and missing names pass through", () => {
   assert.equal(guard({ name: "bash" }, () => "next"), "next");
   assert.equal(guard({}, () => "next"), "next");
 });
+
+test("llm/stream: re-entry terminates after one filtered pass", () => {
+  const listeners = new Map();
+  const streamed = [];
+  const ctx = {
+    on: (event, handler) => listeners.set(event, handler),
+    llm: {
+      // Model the real waterfall: a re-entered stream runs the listeners again.
+      stream(options) {
+        streamed.push(options);
+        return listeners.get("llm/stream")(options, () => "final-result");
+      },
+    },
+  };
+  installToolHider(ctx, () => ({ hideTools: ["read_image"] }));
+
+  const result = listeners.get("llm/stream")({ tools: [READ_IMAGE, READ_IMG] }, () => "next-result");
+
+  assert.equal(result, "final-result");
+  assert.equal(streamed.length, 1, "exactly one re-entry, then the filter is a no-op");
+  assert.deepEqual(streamed[0].tools.map((tool) => tool.name), ["read_img"]);
+});

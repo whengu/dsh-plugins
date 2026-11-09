@@ -31,7 +31,7 @@ read_img(path, question?)
 | 隐藏工具：`llm/stream` 的入参带 `tools`，过滤后重入瀑布即改变本次声明 | `dsh-llm/lib/types/types.d.ts:556`（`tools?: ToolSchema[]`）、`dsh-llm/lib/index.js:786-796`（`toolUpdate` 未声明时声明直接取 `tools`） |
 | 调用兜底：`tools/pre-execute` 返回 `{ kind: "deny", reason }` | `dsh-tools/lib/types/contracts.d.ts:321-326`（`PreToolDecision`） |
 
-**为什么只有一个工具、没有任何 hook**：本插件的需求是「模型主动去读一个文件」，属于工具语义。用户粘贴图片的场景由别处负责，所以不需要 `llm/stream` 改写，也不注册任何额外工具——上下文里只多一个 schema（979 字节，约 250 tokens）。
+**为什么只有一个工具、没有消息改写**：本插件的需求是「模型主动去读一个文件」，属于工具语义。用户粘贴图片的场景由别处负责，所以不改写任何消息，也不注册额外工具——上下文里只多一个 schema（979 字节，约 250 tokens）。**唯一例外**是可关闭的工具隐藏器（`hideTools`），见下文〈隐藏官方的 `read_image`〉。
 
 ## 配置
 
@@ -62,6 +62,13 @@ read_img(path, question?)
 | `thinking` | `false` | 是否允许视觉模型思考。关闭时发送 `chat_template_kwargs: {enable_thinking: false}`；开启时不发，交给端点默认 |
 | `hideTools` | `["read_image"]` | 从模型声明里移除、并在调用时拒绝的工具名。默认隐藏宿主自带的 `read_image`；设为 `[]` 即完全关闭 |
 | `prompt` | 见源码 | 未给 `question` 时的默认指令 |
+
+## 数据流向与信任边界
+
+- 本地图片以 base64 形式随请求发给配置的 `baseURL`；插件不在本地另存副本、不上传其他位置。
+- `http(s)` 目标由视觉端点去抓，本插件不下载；因此 `maxImageBytes` **只约束本地文件**，URL 目标不受它限制。
+- URL 结果按 **URL 字符串**缓存，同一地址内容变化不会自动失效（LRU 64 条，随进程重启清空）。
+- 插件能读进程可读的任意图片路径——权限等同于执行它的那个进程。涉密图片不要交给不可信的端点。
 
 ## 隐藏官方的 `read_image`
 
@@ -99,8 +106,8 @@ read_img(path, question?)
 | 项 | 结果 |
 |---|---|
 | `pnpm check`（语法 + 包契约 + patch 契约） | 通过，4 个 lib 文件 |
-| 离线用例 `pnpm test`（cache / image / vision / hide-tools，零依赖） | 32/32 通过 |
-| 插件用例 `pnpm test:plugin`（需宿主包可解析） | 10/10 通过 |
+| 离线用例 `pnpm test`（cache / image / vision / hide-tools，零依赖） | 37/37 通过 |
+| 插件用例 `pnpm test:plugin`（需宿主包可解析） | 11/11 通过 |
 | live 用例 `pnpm test:live`（打真实端点） | 1/1 通过，2.8s，正确识别「左上红、右下蓝、白底」 |
 | 应用内探针（子智能体调用 `read_img`） | 通过：绝对路径、相对路径、错误路径三种场景；报错后工具仍可用 |
 | 上下文占用 | 1 个工具，schema 979 字节（约 250 tokens）；且不再声明官方的 `read_image`（省 1120 字节） |
@@ -154,7 +161,7 @@ dsh plugin --profile web remove dsh-read-img                    # 彻底移除
 
 ### 安装记录
 
-- **2026-11-09**：0.1.4 装入 `web` profile（仓库构建的 tarball 约 14 KB，7 个条目：`lib/index.js`、`lib/cache.js`、`lib/image.js`、`lib/vision.js`、`cordis.patch.yml`、`package.json`、`README.md`）。装载后 `include:read-img` 为 `active`；`dsh --profile web --dump-config` 中 `- id: read-img` 带完整 config。同一天停用第三方 `dsh-tool-vision`（`enabled: false`），上下文中的视觉工具由 15 个降为 1 个。当日中途曾用开发目录产物装过一次，随后以**本仓库构建的 tarball 重装**，确认运行副本与源码一致（`package.json` 由 `pnpm pack` 规范化，见下）。
+- **2026-11-09**：0.1.5 装入 `web` profile（仓库构建的 tarball 约 15 KB，7 个条目：`lib/index.js`、`lib/cache.js`、`lib/image.js`、`lib/vision.js`、`cordis.patch.yml`、`package.json`、`README.md`）。装载后 `include:read-img` 为 `active`；`dsh --profile web --dump-config` 中 `- id: read-img` 带完整 config。同一天停用第三方 `dsh-tool-vision`（`enabled: false`），上下文中的视觉工具由 15 个降为 1 个。当日中途曾用开发目录产物装过一次，随后以**本仓库构建的 tarball 重装**，确认运行副本与源码一致（`package.json` 由 `pnpm pack` 规范化，见下）。
 
 ## 运行副本与源码的同步状态
 
@@ -182,6 +189,7 @@ foreach ($file in 'lib/index.js','lib/cache.js','lib/image.js','lib/vision.js','
 
 ## 版本
 
+- 0.1.5 — 评审修复：默认值数组不再被共享引用（`hideTools` 每次拷贝、`DEFAULTS.hideTools` 冻结）；`file://` 带主机名的报错带 `read_img:` 前缀；调用方取消不再被误报成超时；媒体类型改为**魔数优先**；响应体超过 4 MB 直接拒绝。用例 32→37、10→11。
 - 0.1.4 — 新增 `hideTools`（默认 `["read_image"]`）：在 `llm/stream` 里过滤声明、在 `tools/pre-execute` 里拒绝调用，全程 fail-open。停用宿主那个永远拿不到内容的官方图像工具，避免模型误调。
 - 0.1.3 — `maxTokens` 默认改为 20000；新增 `thinking` 配置（默认 `false`）。关闭时发送 `chat_template_kwargs: {enable_thinking: false}`：实测该端点从「300 token 用尽、正文为空」变为「6 token 直接作答」。`reasoning_effort: "none"` 经实测只把推理从 539 字符压到 265 字符、并未关闭，因此不发送。
 - 0.1.2 — 修 0.1.1 的两个细节：缓存只存模型答案、路径后缀按调用方回显；工具级硬超时改为跟随配置值（+15s）。

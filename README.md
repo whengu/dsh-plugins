@@ -21,7 +21,7 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 | --- | --- | --- | --- | --- |
 | [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.3.0 | `web` profile 已装，页面实测通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
 | [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.0 | `web` profile 已装，生产验证通过 | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
-| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.4 | `web` profile 已装，工具验收通过 | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.5 | `web` profile 已装，工具验收通过 | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
 
 ## 快速开始（给第一次接触本仓库的人）
 
