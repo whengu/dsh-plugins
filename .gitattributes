@@ -1,0 +1,15 @@
+# Normalize line endings in the repository, not on the developer's machine.
+#
+# This machine runs `core.autocrlf = true`, which checked every text file out as
+# CRLF. That made byte comparisons between the working tree and a packed tarball
+# report differences for identical content, and it silently changed file hashes
+# used as handoff evidence. `eol=lf` keeps the working tree byte-identical to the
+# repository blobs and to anything packed from them, on every platform.
+* text=auto eol=lf
+
+# Binary files must never be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.tgz binary

@@ -45,8 +45,18 @@ while (off + 512 <= tar.length) {
   off = start + Math.ceil(size / 512) * 512;
 }
 
-/** Compare readings with only the final newline treated as insignificant. */
-const sameText = (a, b) => a.replace(/\n$/, "") === b.replace(/\n$/, "");
+/**
+ * Compare readings ignoring line-ending style and the final newline.
+ *
+ * The working tree gets the platform's newline (this machine runs
+ * `core.autocrlf = true`, so files are CRLF on disk), while a tarball packed from
+ * a checkout that held LF stores LF. Comparing raw bytes would then report a
+ * difference for files whose content is identical — a false failure, because line
+ * endings do not change what a JavaScript module does. Normalizing keeps this
+ * check about content; `exact` still reports when the bytes happened to match.
+ */
+const normalizeText = (text) => text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+const sameText = (a, b) => normalizeText(a) === normalizeText(b);
 
 /** Deep structural equality that ignores object key order. */
 function sameValues(a, b) {
@@ -78,7 +88,7 @@ for (const e of entries) {
   const onDisk = fs.readFileSync(disk, "utf8");
   const exact = Buffer.compare(fs.readFileSync(disk), e.content) === 0;
   let equal = exact || sameText(packed, onDisk);
-  let note = exact ? "exact" : equal ? "equal except trailing newline" : "CONTENT DIFFERS";
+  let note = exact ? "exact" : equal ? "equal except line endings / trailing newline" : "CONTENT DIFFERS";
 
   // pnpm rewrites package.json: it strips the trailing newline and may reorder
   // keys, neither of which changes meaning. Compare that file by value.
