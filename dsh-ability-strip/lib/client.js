@@ -1263,15 +1263,26 @@ window.__ModuleLoader__.load({
 						icon: h(ui.IconToolOutlineRegular, { size: 13 }),
 						name: "工具",
 						count: failed ? void 0 : tools?.totalTools,
-						// Which view answered, stated rather than implied: an `agent` scope
-						// has restrictions applied, a `global` one describes the
-						// deployment and may over-report what this session's model sees.
+						// The scope, stated rather than implied. It says "视图", not
+						// "可见": this reads the REGISTRY, so a plugin that filters tools
+						// out of the LLM request afterwards is not reflected here — see the
+						// caveat line below, which exists because that difference is
+						// exactly what a reader hit while looking for `read_image`.
 						note: failed
 							? "读取失败"
 							: tools?.scope === "agent"
-								? "本会话 agent 可见"
-								: "全局注册（未取到本会话 agent）",
+								? "注册表 · 本会话 agent 视图"
+								: "注册表 · 全局视图（未取到本会话 agent）",
 					}),
+					// Without this line the section over-claims: `dsh-read-img` hides
+					// `read_image` by filtering `options.tools` inside `llm/stream`, and
+					// a guard refuses residual calls — the registry still lists it, so
+					// the panel does too. Saying so beats silently looking wrong.
+					h(
+						"div",
+						{ style: { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5, padding: "2px 0 4px" } },
+						"这里是工具注册表。插件可以在请求层再次过滤（例如 dsh-read-img 会隐藏 read_image 并拒绝调用），这类过滤在此视图中看不到。",
+					),
 					failed
 						? h(
 								"div",

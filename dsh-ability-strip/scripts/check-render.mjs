@@ -530,8 +530,15 @@ check(has(text, "bash"), "every non-MCP tool must be listed, not only the intere
 check(has(text, "Describe an image with the vision model"), "a non-MCP tool must show its description");
 check(has(text, "Read a file over MCP"), "an MCP tool must show its description too");
 check(
-  has(text, "本会话 agent 可见"),
-  "an agent-scoped answer must say so, because that is the answer with restrictions applied",
+  has(text, "本会话 agent 视图"),
+  "an agent-scoped answer must name its scope, because that is the view with restrictions applied",
+);
+// The section reads the REGISTRY, so it must say that a request-level filter is
+// invisible here — that difference is why `read_image` still appears even though
+// dsh-read-img removes it from the LLM request.
+check(
+  has(text, "请求层再次过滤"),
+  "the tools section must state that request-level filtering is not reflected",
 );
 check(has(text, "资源工具：已挂载"), "the resource plugin must be stated when mounted");
 check(findButton(tree, "刷新能力信息") !== undefined, "the detail must offer a refresh control");

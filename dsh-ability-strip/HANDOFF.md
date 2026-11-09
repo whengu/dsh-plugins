@@ -15,8 +15,8 @@
 ## 2. 当前状态快照
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile：**0.7.0**（0.3.0 → 0.4.0 → 0.5.0 → 0.6.0 → 0.7.0，均以 `dsh plugin add <tarball>` 装入） |
-| 源码 | 0.7.0：0.4.0 变更推送 + 0.5.0 本地 UI kit（不加载 Harness Client 包）+ 0.6.0 的 tools 标记（按本会话 agent 读工具面）+ 0.7.0 的图标化收起态与工具描述 |
+| 安装 | `web` profile：**0.8.0**（0.3.0 → … → 0.7.0 → 0.8.0，均以 `dsh plugin add <tarball>` 装入） |
+| 源码 | 0.8.0：0.4.0 变更推送 + 0.5.0 本地 UI kit（不加载 Harness Client 包）+ 0.6.0 的 tools 标记（按本会话 agent 读工具面）+ 0.7.0 图标化收起态与工具描述 + 0.8.0 澄清"注册表 vs 请求层过滤" |
 | 宿主半边生效状态 | **0.4.0 与 0.5.0 均已真机确认生效**（0.4.0 重启后 `GET /api/ability-strip/events` = 200 + `text/event-stream`；0.5.0 宿主未改故无需重启）。**0.6.0 新增的 `local` / `scope` 字段需重启 Host 才生效** |
 | 装载 | 已进 `dsh.profile.bundles`；`LinkType` 为空；安装副本与源码内容一致（按换行归一比对）；`why` 有记录 |
 | 页面验证 | 0.3.0：收起/展开/明细/故障弹窗全过（2026-10-28）。0.4.0：推送主路径已验（首帧 `{"version":0}`、20 秒空闲零请求、断线警示标真实出现）。0.5.0：自绘 svg 与面板视觉已验。**0.6.0：客户端可验（tools 计数来自旧宿主也能显示）；非 MCP 清单与 scope 标注需重启后验** |
@@ -197,6 +197,7 @@ DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.
 | 2026-11-09 | **0.5.0 偿还 §7.5 债 1：剥离 primitives 依赖** | 用户要求"处理技术债和质量问题，范围全仓库"。做法：在 `lib/client.js` 内实现本地 UI kit（Icon/Tag/Button/Modal + 10 条图标 path），色彩只用真机读出来的 `--dsw-alias-*`；`require` 面从 `["react","react-dom","@deepseek-ai/dsh-client-ui-primitives"]` 收敛到 `["react","react-dom"]`。**宿主半边一字未改**（`lib/index.js` 归一化哈希仍为 `E3E8BDD6FBB46C92`），所以本次装机不需要重启 Host，硬刷新即可。附带修掉两个真 bug：①`Icon` 吞掉调用点传的 `style`（彩色故障图标会退回继承色）；②`check-render` 的 `createElement` 不像 React 那样写 `props.children`，换成按 React 契约解构 children 的组件后会静默丢文本。两处都补了断言并做变异验证。 |
 | 2026-11-09 | **0.6.0 新增 tools 标记：回答「dsh 向 agent 暴露了哪些工具」** | 用户问能否用插件呈现"dsh 向 agent 暴露了哪些工具"，并问能否和 MCP 合到一起。**能，且合到本插件最合适**——它本来就在读工具注册表。查证结论：① 浏览器侧**没有** tools 版 Remote（`dsh-api-remotes` 里无对应命名空间），所以必须改宿主半边；② `ctx.tools.schemas(scope)` 的 scope 要传 **Agent 对象**（`dsh-tool-executor-ptc` 用 `schemas(exec.agent, exec.toolSet)`、`dsh-tool-cordis` 用 `schemas(context.agent)`），省略则是全局视图；③ `Agents.get(id)` 的入参正是 shared agent/session id，所以会话 id 能解析到 agent。实现：路由开始接收 `payload.sessionId`（此前丢弃），宿主按 `schemas(agent)` 读并在负载里加 `scope`（agent/global）与 `local`（非 MCP 工具名）；reader 缓存改为**按 sessionId 分键**（不同 agent 的 restriction 不同，不能互相喂答案）；客户端新增第三个标记 `tools`（总数）与面板「工具」分区。两条边界如实写进 README：不含按步准入（未传 toolSet）、`local` 不等于"内置"（schema 无来源字段）。变异验证：忽略 sessionId → 5 条断言红；scope 标注恒为 global → 1 条红。**0.6.0 的宿主字段需重启 Host 才生效。** |
 | 2026-11-09 | **0.7.0 紧凑化 + 工具描述** | 用户三点要求：①工具描述能否顺手显示；②状态栏空间不足，移除 `skill`/`MCP`/`tools` 文本只留图标；③MCP 无连接时不要文字，只给图标，"无"/详情挪到展开面板。实施：宿主汇总改为返回 `{name, description}` 对象（描述取自模型看到的那份 schema，按 400 字符截断并加 `…`，`MAX_DESCRIPTION_CHARS` 可测）；客户端三个 chip 去掉标签，各用图标区分 + `aria-label` + `title`；MCP 状态由"文字"改为"图标"（连上=绿色数字、未连接=琥珀 ✕、故障/读取失败=红色警示），文字移进 tooltip 与面板 MCP 标题右侧；面板里 MCP 工具与非 MCP 工具都用同一 `ToolRow`（名字 + 最多两行描述，完整文本在 tooltip）。**顺带纠正一处我写反的事实**：全局视图并非"更大"——它不含 agent scope 里注册的工具，本机实测同一时刻全局 40 / agent 72，方向是少。变异验证：把 `skill` 标签加回 → 1 条断言红；描述不进渲染文本 → 2 条断言红（MCP 与非 MCP 各一）。 |
+| 2026-11-09 | **0.8.0 澄清「注册表 vs 请求层过滤」** | 用户重启后发现工具列表里仍有 `read_image`，问是显示插件还是读图插件的问题。查证：**两者都没坏**。`dsh-read-img` 的 `lib/hide-tools.js` 在 `llm/stream` 里 `filterTools(options.tools, hidden)`，过滤的是**发给模型的请求**，另加 pre-execute guard 拒绝残余调用；它不注销别人注册的工具（也不该）。能力条读的是 `ctx.tools.schemas(agent)` = **注册表**，所以 `read_image` 必然还在。真正的问题在我的措辞：面板写"本会话 agent 可见"，而它只是"注册表里对该 agent 可见"。修法：标题改为"注册表 · 本会话 agent 视图 / 全局视图"，并在工具分区标题下加一行明说"插件可在请求层再过滤，这类过滤看不到"（用 read_image 作例子）。**不做**"请求层最终工具列表"视图：那要观察 `llm/stream` 下游的 `options.tools`，只有发过请求后才有值，且受监听器注册顺序影响，会引入 staleness。 |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 

@@ -26,7 +26,7 @@ DeepSeek Harness（dsh）Web GUI 输入框下方的**只读**能力条——挂�
 
 > **工具描述是工具作者自己的话**，直接取自模型看到的那份 schema——所以它回答"这个工具是干什么的"，且不掺任何猜测。描述在宿主侧截断到 400 字符（网络边界，不是取舍），被截断时会带 `…`；完整文本在每行的 tooltip 里。每行最多显示两行描述，避免一条长描述把整个列表挤出视野。
 
-## tools 标记：模型实际拿到的工具面
+## tools 标记：注册表里该 agent 能看到的工具面
 
 `MCP` 只回答"MCP 通不通"，回答不了"模型手里一共有多少工具"。后者才是容量问题的来源：
 一个插件可以注册十几个工具，每个几百到上千字节 schema，全部进系统提示。
@@ -41,8 +41,22 @@ ctx.tools.schemas(agent)                         // 与真实 executor 完全相
 `tools.schemas(agent)` 正是 `dsh-tool-executor-ptc`（`tools.schemas(exec.agent, exec.toolSet)`）和
 `dsh-tool-cordis`（`ctx.tools.schemas(context.agent)`）在真实模型步骤里用的调用，所以
 `ctx.tools.restrict()` 的按 agent 削减、以及 scoped 注册对全局工具的遮蔽，都会如实反映出来。
-省略 scope 拿到的是**全局视图**（部署注册了什么），面板据此在标题右侧写清是"本会话 agent 可见"
-还是"全局注册（未取到本会话 agent）"——不猜，也不把降级结果伪装成准确结果。
+省略 scope 拿到的是**全局视图**（部署注册了什么），面板据此在标题右侧写清是哪一种。
+
+> ### 它读的是注册表，不是最终请求
+>
+> 这一点必须说清楚，因为它会造成"看起来不对"：**插件可以在请求层再做一次过滤**，而
+> 那层过滤在注册表里看不见。真实例子就是本项目自己的 `dsh-read-img`——它在
+> `llm/stream` 里把 `read_image` 从 `options.tools` 里剔除，并用一条 pre-execute guard
+> 拒绝残余调用（历史记录、模型幻觉）。
+>
+> 结果：`read_image` **仍在注册表里**，所以能力条照样列出它；但模型收到的请求里没有它。
+> 这不是谁坏了，而是两个不同的问题："注册了什么" vs "这次请求发了什么"。
+>
+> 能力条只回答前者，并且**在面板里直接写出这个限制**（工具分区标题下方那行小字），
+> 免得读者以为数字虚高或插件失效。要回答后者需要观察真实请求（`llm/stream` 下游的最终
+> `options.tools`），那只有发过一次请求后才有值，且受监听器注册顺序影响——不值得为此
+> 引入一个会 staleness 的视图。
 
 **如实说明两个边界**：
 
@@ -141,6 +155,7 @@ wire:     text/event-stream, 每帧形如 `data: {"version":N}`
 - **推送通道占一条浏览器连接。** 每个页面持有一条常开的 SSE 请求（HTTP/1.1 同一 origin 上限 6 条）。空闲时不发数据，但这条槽位是占着的。DSH 自己的客户端 HMR 也用同样的做法。
 - **自带控件，只用 theme token。** 0.5.0 起本插件的浏览器半边**不加载任何 Harness Client 包**（此前 `require` 了 `@deepseek-ai/dsh-client-ui-primitives`，那是 DSH 官方 skill `cordis-plugin-development` 里 `references/practices.md` 明文禁止的做法）。按钮、状态标签、弹窗、图标全部是本 bundle 自己的实现，色彩只引用 `--dsw-alias-*` 主题变量。代价是这些控件的外观不随宿主升级自动演进；收益是宿主把那些包改名、合并、删掉时本插件不会跟着变空白。
 - **tools 标记可能是全局视图。** 它按本会话 agent 读（`tools.schemas(agent)`）；但如果该会话暂时没有存活 agent（宿主查不到），会退回全局视图并在面板里写明"全局注册（未取到本会话 agent）"。**全局视图不是"更大的那个"**：它不含 `ctx.tools.restrict()` 的按 agent 削减，也**不含注册在该 agent scope 里的工具**（`view(scope)` = 全局层 + 祖先层 + 自己的注册）。本机 2026-11-09 实测同一时刻全局 40、agent 视图 72——**方向是少，不是多**。所以看到 `scope: global` 时，那个数字只能当参考。
+- **tools 列表只反映注册表。** 插件在请求层做的过滤（`llm/stream` 里剔除 `options.tools`）不在此视图中：`dsh-read-img` 会隐藏并拒绝 `read_image`，但注册表仍有它，所以能力条照样列出。数字与"这次请求真发了什么"可能不一致，这是有意保留的语义差（面板里也写了）。
 - **tools 计数不含按步准入。** `schemas(agent)` 没有传 `toolSet`，所以它是"这个 agent 被提供什么"，不是"某一步真放行了什么"。后者只有真实步骤内部才知道。
 
 Loader 行只带 `entryId`、`moduleName`、`meta`、`enabled`、`fiberPhase`——**没有配置**——所以配置里的 `serverName` 从 inventory 拿不到。已连接的服务器改从工具注册表取名，面板才叫得出它们；Loader 行保留自己的行 id（本机是 `mcp-local`）。
