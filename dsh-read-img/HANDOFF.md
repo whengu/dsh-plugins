@@ -1,7 +1,7 @@
 # HANDOFF：dsh-read-img 交接文档
 
 > 交接目标：读完本文 + [README.md](README.md)，接手者应能在**不问任何历史问题**的前提下维护、升级、回滚本插件。
-> 本文写于 2026-11-09，快照基线：dsh `0.2.2-rc.1`、Linux 容器、profile `web`、版本 `0.1.3`。
+> 本文写于 2026-11-09，快照基线：dsh `0.2.2-rc.1`、Linux 容器、profile `web`、版本 `0.1.4`。
 
 ## 1. 这是什么，为什么存在
 
@@ -22,10 +22,10 @@
 
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile，版本 `0.1.3`，2026-11-09 以 tarball 安装（`file:/plugins/dist/dsh-read-img-0.1.3.tgz`，该路径是安装时的 staging 路径） |
+| 安装 | `web` profile，版本 `0.1.4`，2026-11-09 以 tarball 安装（`file:/plugins/dist/dsh-read-img-0.1.4.tgz`，该路径是安装时的 staging 路径） |
 | 装载 | `include:read-img`，`fiberPhase: active`，热加载，未重启 |
 | 静态检查 | `pnpm check` 通过（4 个 lib 文件语法 + 包契约 + patch 契约） |
-| 离线用例 | 22/22 通过（`pnpm test`，零依赖） |
+| 离线用例 | 32/32 通过（`pnpm test`，零依赖） |
 | 插件用例 | 10/10 通过（`pnpm test:plugin`，需宿主包可解析） |
 | live 用例 | 1/1 通过（`pnpm test:live`，真实端点，2.8s） |
 | 应用内探针 | 通过：绝对路径、相对路径、错误路径；报错后工具仍可用 |
@@ -38,12 +38,13 @@
 
 | 文件 | 哈希 | 字节 | 说明 |
 |---|---|---|---|
-| `lib/index.js` | `24B87A7750BB60CA` | 8358 | 入口：Config、normalizeConfig、createReader、工具注册 |
+| `lib/index.js` | `65443FDAA444D7BD` | 8837 | 入口：Config、normalizeConfig、createReader、工具注册、隐藏器装配 |
+| `lib/hide-tools.js` | `C435DB9498F0A61E` | 2744 | `llm/stream` 声明过滤 + `tools/pre-execute` 兜底，fail-open |
 | `lib/image.js` | `CF69D294687FF3E0` | 3368 | 路径分类、magic bytes 嗅探、读文件与大小限制 |
 | `lib/vision.js` | `F2883945BD765940` | 4031 | `/chat/completions` 调用、思考开关、响应解析、超时与取消 |
 | `lib/cache.js` | `B69516358F81ADB0` | 1058 | 有界 LRU |
 | `cordis.patch.yml` | `B1FEFEEF97C6F147` | 282 | bundle patch（id `read-img` / name `dsh-read-img`） |
-| `package.json` | `DD65C10212E69EDC` | 1311 | `dsh.bundle.patch` + `engines.dsh` + files 白名单 |
+| `package.json` | `B6F226B5F2869B96` | 1361 | `dsh.bundle.patch` + `engines.dsh` + files 白名单 |
 | `scripts/check.mjs` | `B0251997306DE2DF` | 3738 | `pnpm check`：语法 + 包契约 + patch 契约 |
 
 ### 运行副本
@@ -85,6 +86,14 @@
 
 结论：只有 vLLM 系模板开关真正关掉思考；`reasoning_effort: "none"` 只缩短推理，**发它会造成"已关闭"的错觉**，因此不发送。`thinking: true` 时不发任何开关，交给端点默认。
 
+### 决策 6：在请求层隐藏官方 `read_image`
+
+宿主的 `read_image`（`dsh-tool-fs`）始终注册，只在执行时校验路由模态；纯文本模型调用它只会得到一个 `[image omitted …]` 占位符。危害不只是 1120 字节 schema，而是模型会误以为它能看图、白调一轮。
+
+处理：`llm/stream` 里过滤 `options.tools`（`toolUpdate` 未声明时，声明就是取这个字段，见 `dsh-llm/lib/index.js:786-796`），再重入瀑布；`tools/pre-execute` 对同名调用拒绝并指向 `read_img`。**全程 fail-open**：任何异常都 `next()`。
+
+不做的事：不碰 `toolHistory`（用户明确不要求），不整体覆盖 preset（实验证明局部 patch 只改到顶层死条目，整体替换会把 40+ 插件削成 1 个）。
+
 ### 教训 1：推荐插件前先数工具面
 
 上一轮推荐 `dsh-tool-vision` 时只验了「能跑」，没数它注册多少工具——15 个工具 13.5 KB 是后期才发现的。**对这类插件，上下文成本与功能同等重要，应先量化再推荐。**
@@ -120,7 +129,7 @@
 ## 6. 验收清单（接手时逐条打勾）
 
 - [ ] `pnpm check` 通过
-- [ ] `pnpm test` 20/20
+- [ ] `pnpm test` 32/32
 - [ ] （有 dsh 的机器）`pnpm test:plugin` 10/10
 - [ ] （可选）`pnpm test:live` 1/1，需要 `VISION_BASE` / `VISION_KEY` / `VISION_MODEL`
 - [ ] `dsh --profile web --dump-config` 里有 `- id: read-img` 且 config 完整

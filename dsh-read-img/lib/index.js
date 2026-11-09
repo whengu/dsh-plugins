@@ -14,6 +14,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { LruCache } from "./cache.js";
 import { readImageFile, toTarget } from "./image.js";
 import { callVision } from "./vision.js";
+import { installToolHider } from "./hide-tools.js";
 
 export const name = "dsh-read-img";
 
@@ -30,6 +31,7 @@ export const DEFAULTS = Object.freeze({
   timeoutMs: 120_000,
   maxImageBytes: 10 * 1024 * 1024,
   thinking: false,
+  hideTools: ["read_image"],
   prompt: "详细描述这张图片的内容；如果图中有文字，逐字转录。",
 });
 
@@ -61,6 +63,8 @@ export const Config = z.object({
    * budget (and can return empty content when maxTokens runs out).
    */
   thinking: z.boolean().default(DEFAULTS.thinking),
+  /** Tool names kept out of the model's declarations and refused if called. */
+  hideTools: z.array(z.string()).default(DEFAULTS.hideTools),
   /** Instruction used when the caller supplies no question. */
   prompt: z.string().default(DEFAULTS.prompt),
 });
@@ -82,6 +86,7 @@ export function normalizeConfig(config) {
     timeoutMs: Number(pick("timeoutMs")),
     maxImageBytes: Number(pick("maxImageBytes")),
     thinking: pick("thinking") === true,
+    hideTools: Array.isArray(raw.hideTools) ? raw.hideTools.filter((n) => typeof n === "string" && n.length > 0) : DEFAULTS.hideTools,
     prompt: String(pick("prompt")),
   };
   assertPositive(normalized.maxTokens, "maxTokens");
@@ -201,5 +206,9 @@ export function apply(ctx, config) {
   ctx.inject(["tools"], (toolCtx) => {
     if (!getConfig().enabled) return;
     registerReadImg(toolCtx, getConfig);
+  });
+  ctx.inject(["llm"], (llmCtx) => {
+    if (!getConfig().enabled) return;
+    installToolHider(llmCtx, getConfig);
   });
 }

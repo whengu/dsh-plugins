@@ -1,6 +1,6 @@
 {
   "name": "dsh-read-img",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "One tool for DeepSeek Harness: read a local image file with an external OpenAI-compatible vision model. No hooks, no bridge, no UI.",
   "type": "module",
@@ -22,7 +22,7 @@
   },
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test test/cache.test.mjs test/image.test.mjs test/vision.test.mjs",
+    "test": "node --test test/cache.test.mjs test/image.test.mjs test/vision.test.mjs test/hide-tools.test.mjs",
     "test:plugin": "node --test test/plugin.test.mjs",
     "test:live": "node --test test/live.test.mjs",
     "pack": "pnpm pack --pack-destination dist"
@@ -30,6 +30,7 @@
   "files": [
     "lib/index.js",
     "lib/cache.js",
+    "lib/hide-tools.js",
     "lib/image.js",
     "lib/vision.js",
     "cordis.patch.yml",

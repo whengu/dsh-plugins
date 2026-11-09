@@ -49,12 +49,18 @@ test("normalizeConfig: fills defaults and keeps explicit values", () => {
   assert.equal(normalized.enabled, true);
   assert.equal(normalized.maxTokens, 20_000);
   assert.equal(normalized.thinking, false);
+  assert.deepEqual(normalized.hideTools, ["read_image"]);
 
   const custom = normalizeConfig({ model: "x/vision", maxTokens: 99, enabled: false, thinking: true });
   assert.equal(custom.model, "x/vision");
   assert.equal(custom.maxTokens, 99);
   assert.equal(custom.enabled, false);
   assert.equal(custom.thinking, true);
+
+  const noHide = normalizeConfig({ hideTools: [] });
+  assert.deepEqual(noHide.hideTools, []);
+  const filtered = normalizeConfig({ hideTools: ["read_image", "", 42] });
+  assert.deepEqual(filtered.hideTools, ["read_image"]);
 });
 
 test("normalizeConfig: rejects unusable numbers and blank required strings", () => {

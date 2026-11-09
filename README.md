@@ -20,7 +20,7 @@ DeepSeek Harness（dsh）自研插件集中开发仓库。**所有插件在一�
 | --- | --- | --- | --- | --- |
 | [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.3.0 | `web` profile 已装，页面实测通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
 | [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.0 | `web` profile 已装，生产验证通过 | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
-| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.3 | `web` profile 已装，工具验收通过 | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+| [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.4 | `web` profile 已装，工具验收通过 | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
 
 ## 快速开始（给第一次接触本仓库的人）
 
@@ -82,4 +82,4 @@ dsh-plugins/
 - **dsh-subagent-wait-reminder** 无独立 git 历史，交接事实由其 [HANDOFF.md](dsh-subagent-wait-reminder/HANDOFF.md) 哈希快照接管。
 - 2026-11-03 迁移后两插件的 tgz 绝对路径变化，profile 已从新路径重新登记（相同字节重装，安装副本哈希与源码逐字节一致）。
 - 2026-11-04 规约从仓库外移入本仓库根 `INSTALL.md`（此前放工作区根，导致仓库不自洽、链接一出仓库即死链）。
-- **2026-11-09 新增 dsh-read-img**：起因是第三方 `dsh-tool-vision` 在上下文里注册 15 个工具（约 13.5 KB schema），对「读一个本地图片文件」过度设计；按需求澄清后改为单工具插件（0 hook、0 浏览器半边）。首个可安装版本 0.1.0，当日迭代到 0.1.2 并装入 web profile。
+- **2026-11-09 新增 dsh-read-img**：起因是第三方 `dsh-tool-vision` 在上下文里注册 15 个工具（约 13.5 KB schema），对「读一个本地图片文件」过度设计；按需求澄清后改为单工具插件（0 hook、0 浏览器半边）。首个可安装版本 0.1.0，当日迭代到 0.1.4 并装入 web profile（0.1.4 起在请求层隐藏官方的 `read_image`）。
