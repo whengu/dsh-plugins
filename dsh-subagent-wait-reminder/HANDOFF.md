@@ -90,7 +90,7 @@
 - **只从 tarball 安装**。目录/`link:` 安装 = 符号链接 = 源码即线上，且 `dsh-client-modules` 的路径缓存让坏形态重装都救不回；
 - `dsh.bundle.patch` 是自动激活的前提：没有它，`dsh plugin add` 只登记依赖并打印 `declares no dsh.bundle` 警告，**插件永不加载**；
 - 每次发布必须递增版本号（tarball 不可覆盖，lockfile 记 sha512）；`dist/` 不可删；
-- Host 不需要重启（`dsh-hmr` 重组层）；本插件纯 Host 侧，也不涉及 `Ctrl+F5`。
+- **改了宿主半边代码 → 必须重启 Host 进程**（Loader 用普通 `import()`，同一 specifier 命中 Node ESM 缓存，`dsh-hmr` 只重组层不重新求值模块）。本插件纯 Host 侧，所以**每次发版都必须重启 Host 才生效**，也不涉及 `Ctrl+F5`。实测证据见仓库根 `INSTALL.md` §4。
 
 完整规约见仓库根 `..\INSTALL.md`（[INSTALL.md](../INSTALL.md)，跨插件唯一权威：安装隔离 · 目录骨架 · 单仓库）。本插件的具体命令在 [README.md](README.md)「安装」节。
 

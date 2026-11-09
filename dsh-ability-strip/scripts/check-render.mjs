@@ -12,25 +12,66 @@ import { fileURLToPath } from "node:url";
 const pkgDir = process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(pkgDir, "lib/client.js"), "utf8");
 
-// A minimal DOM surface: the bundle reads `document.body` as the portal target
-// and measures the anchor row. Both are stubbed so the component can be executed
-// without a browser; nothing here renders.
+// A minimal DOM surface: the bundle reads `document.body` as the portal target,
+// measures the anchor row, and watches visibility. All are stubbed so the
+// component can be executed without a browser; nothing here renders.
 const BODY = { nodeType: 1, tagName: "BODY" };
+const documentListeners = [];
 globalThis.document = {
   body: BODY,
-  // The strip polls only while the tab is visible.
+  // The strip reads only while the tab is visible.
   visibilityState: "visible",
-  addEventListener() {},
-  removeEventListener() {},
+  addEventListener(type, listener) {
+    documentListeners.push({ type, listener });
+  },
+  removeEventListener(type, listener) {
+    const at = documentListeners.findIndex((e) => e.type === type && e.listener === listener);
+    if (at >= 0) documentListeners.splice(at, 1);
+  },
 };
-// The poll timer is captured rather than scheduled: the checks drive the strip
-// directly, and a live interval would keep the process alive.
+// Intervals are CAPTURED, never scheduled: this is the tripwire that proves the
+// strip no longer runs one. A change stream replaced the 15 s poll, so any entry
+// here is a regression, and case 7 fails on the spot.
 const timers = [];
 globalThis.setInterval = (fn, ms) => {
   timers.push({ fn, ms });
   return timers.length;
 };
 globalThis.clearInterval = () => {};
+// `EventSource` is the push channel. Captured rather than connected: the checks
+// drive frames directly and would otherwise hold a live connection open.
+const sources = [];
+class FakeEventSource {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+  constructor(url) {
+    this.url = url;
+    this.readyState = FakeEventSource.CONNECTING;
+    this.closed = false;
+    this.listeners = new Map();
+    sources.push(this);
+  }
+  addEventListener(type, listener) {
+    const bucket = this.listeners.get(type);
+    if (bucket === undefined) this.listeners.set(type, [listener]);
+    else bucket.push(listener);
+  }
+  close() {
+    this.readyState = FakeEventSource.CLOSED;
+    this.closed = true;
+  }
+  /**
+   * Deliver one event. `open` moves the source to OPEN the way the real one does;
+   * every other type leaves `readyState` alone, so a check can stage a transient
+   * drop (CONNECTING) and a fatal one (CLOSED) before firing `error`.
+   */
+  emit(type, data) {
+    if (type === "open") this.readyState = FakeEventSource.OPEN;
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener({ data, type });
+  }
+}
+globalThis.EventSource = FakeEventSource;
 globalThis.window = {
   __ModuleLoader__: { load(r) { globalThis.__reg = r; } },
   innerWidth: 1200,
@@ -49,6 +90,7 @@ const createElement = (type, props, ...children) => ({
 let hookState = [];
 let hookIndex = 0;
 let effects = [];
+let cleanups = [];
 
 const React = {
   createElement,
@@ -133,6 +175,7 @@ function mount(props) {
   hookState = [];
   hookIndex = 0;
   effects = [];
+  cleanups = [];
   return render(props);
 }
 
@@ -143,12 +186,32 @@ function render(props) {
   return Component(props);
 }
 
-/** Flush effects of the current mount. */
+/** Flush effects of the current mount, recording any cleanup they return. */
 async function settle() {
   const pending = [...effects];
-  for (const fn of pending) await fn();
+  for (const fn of pending) {
+    const cleanup = await fn();
+    if (typeof cleanup === "function") cleanups.push(cleanup);
+  }
   await new Promise((r) => setImmediate(r));
 }
+
+/** Run the mount's recorded effect cleanups (what React does on unmount). */
+async function unmount() {
+  const pending = cleanups.reverse();
+  cleanups = [];
+  for (const fn of pending) await fn();
+}
+
+/** Let a microtask-queued read enter the stub's `load`. */
+const flush = () => new Promise((r) => setImmediate(r));
+
+/** Fire `visibilitychange` on the listeners the current mount registered. */
+const fireVisibility = () => {
+  for (const entry of [...documentListeners]) {
+    if (entry.type === "visibilitychange") entry.listener();
+  }
+};
 
 /** Collect every string/number leaf in a built tree, expanding function components. */
 function textOf(node) {
@@ -205,8 +268,41 @@ function findDialog(node) {
   return findDialog(node.children);
 }
 
+/**
+ * Depth-first search for a node carrying an exact accessible name or title.
+ *
+ * The push-down marker on the collapsed row is an icon with no text, so `textOf`
+ * cannot see it: its accessible name is the only thing there is to assert on.
+ * @param node - built tree root.
+ * @param label - exact `aria-label` (or `title`) to match.
+ * @returns the matching node, or undefined.
+ */
+function findByLabel(node, label) {
+  if (node === null || node === undefined || typeof node !== "object") return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findByLabel(child, label);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (node.type === "Portal") return findByLabel(node.children, label);
+  if (typeof node.type === "function") {
+    let out;
+    try {
+      out = node.children.length > 0 ? node.type(node.props, ...node.children) : node.type(node.props);
+    } catch {
+      return undefined;
+    }
+    return findByLabel(out, label);
+  }
+  if (node.props?.["aria-label"] === label || node.props?.title === label) return node;
+  return findByLabel(node.children, label);
+}
+
 function findButton(node, label) {
   if (node === null || node === undefined || typeof node !== "object") return undefined;
+
   if (Array.isArray(node)) {
     for (const child of node) {
       const hit = findButton(child, label);
@@ -313,6 +409,10 @@ const expand = findButton(tree, "明细");
 console.log("expand button found:", expand !== undefined);
 check(expand !== undefined, "明细 button must exist");
 if (expand) expand.props.onClick();
+// Opening the panel reads (see case 11). Settle it here so this case owns its own
+// read: the stub has no unmount isolation, and a read left in flight would land in
+// the next case's state slot.
+await flush();
 tree = render(okProps);
 log("case3 (expanded)", tree);
 text = textOf(tree);
@@ -389,6 +489,7 @@ check(has(dialogText, "mcp-local"), "the dialog must name the affected servers")
 check(has(dialogText, "知道了"), "the dialog must be dismissible");
 const expand4b = findButton(render(disconnectedProps), "明细");
 if (expand4b) expand4b.props.onClick();
+await flush();
 text = textOf(render(disconnectedProps));
 check(has(text, "没有 MCP 服务器注册工具"), "the panel must state that no server registered tools");
 check(has(text, "已配置 1 个客户端条目"), "the configured row must still be listed apart");
@@ -461,6 +562,7 @@ check(has(text, "读取失败"), "a failed skills read must say 读取失败");
 check(text.includes("MCP"), "a skills failure must not blank the MCP mark");
 const expand5b = findButton(render(skillsBadProps), "明细");
 if (expand5b) expand5b.props.onClick();
+await flush();
 text = textOf(render(skillsBadProps));
 check(has(text, "skills/list 读取失败"), "the expanded skills block must name its failing Remote");
 
@@ -474,6 +576,7 @@ await settle();
 render(bundlesBadProps);
 const expand5c = findButton(render(bundlesBadProps), "明细");
 if (expand5c) expand5c.props.onClick();
+await flush();
 text = textOf(render(bundlesBadProps));
 log("case5c (bundles failed)", render(bundlesBadProps));
 check(has(text, "pluginManager/listBundles 读取失败"), "a failed bundle read must name its failing Remote");
@@ -488,16 +591,11 @@ log("case6 (throw)", render(throwProps));
 check(text.some((t) => t.includes("读取失败：network down")), "a thrown load must be shown");
 check(text.includes("…"), "a thrown load leaves the counts unknown, not zero");
 
-// --- Case 7: the strip polls itself ---------------------------------------
-// 已连接 must not go stale: the strip re-reads on its own. This asserts the poll
-// is registered with a sane interval, not that a timer fires (the checks drive
-// the component directly).
-mount(okProps);
-await settle();
-check(timers.length > 0, "the strip must register a self-refresh interval");
-const poll = timers[timers.length - 1];
-check(poll.ms > 0 && poll.ms <= 60_000, `the poll interval must be sane, saw ${poll.ms}ms`);
-// A hidden tab must not read: the tick checks visibility before spending a call.
+// --- Case 7: no timer, one change stream ----------------------------------
+// This is the mechanism upgrade, stated as a check: the strip used to re-read the
+// Host on a permanent page-side interval every 15 s whether or not anything had
+// changed. There must now be no interval at all — in any state — and one open
+// change stream instead.
 let loadCount = 0;
 const countingProps = {
   sessionId: "s7",
@@ -506,53 +604,157 @@ const countingProps = {
     return payloadOk;
   },
 };
-const timerCountBefore = timers.length;
+const sourcesBefore = sources.length;
 mount(countingProps);
 await settle();
-// The mount registered its own interval; that is the closure to drive, since an
-// earlier case's tick still points at an earlier component instance.
-const livePoll = timers[timers.length - 1];
-check(timers.length > timerCountBefore, "each mount must register its own interval");
-const before = loadCount;
-globalThis.document.visibilityState = "hidden";
-// The tick fires `void run(...)`, so awaiting the tick alone would not cover the
-// read. The stub's `load` is counted synchronously on entry, so a short flush is
-// enough to observe whether a read was started at all.
-livePoll.fn();
-await new Promise((r) => setImmediate(r));
-check(loadCount === before, "a hidden tab must not spend a poll read");
-globalThis.document.visibilityState = "visible";
-livePoll.fn();
-await new Promise((r) => setImmediate(r));
-check(loadCount > before, "a visible tab must re-read on the poll tick");
-
-// --- Case 8: an unchanged poll must not re-render ------------------------
-// The same answer arriving again must not reach setState with a NEW object: that
-// would rebuild the row and repaint every interval for nothing. The stub's
-// setState does not re-render, so what is counted is the state object identity —
-// a fresh object is exactly the re-render React would schedule.
-const stablePayload = { ...payloadOk };
-const stableProps = { sessionId: "s8", load: async () => stablePayload };
-const timerCountBefore8 = timers.length;
-mount(stableProps);
-await settle();
-check(timers.length > timerCountBefore8, "case 8 must register its own interval");
-// The tick must come from THIS mount: an earlier case's tick closes over an
-// earlier component instance whose state slot is no longer the one under test.
-const livePoll8 = timers[timers.length - 1];
-const stateSlot8 = hookState[1];
-check(stateSlot8?.phase === "ready", "case 8 must have read once before polling");
-const payloadBefore = stateSlot8.payload;
-livePoll8.fn();
-await new Promise((r) => setImmediate(r));
-const stateAfterIdenticalPoll = hookState[1];
+check(timers.length === 0, `the strip must not register an interval, saw ${timers.length}`);
+check(sources.length === sourcesBefore + 1, "the strip must open exactly one change stream");
+const stream = sources[sources.length - 1];
+// Document-relative (no leading slash: routes resolve below the app's base path),
+// and written out rather than derived — the host half pins the same literal, so a
+// rename on either side fails a check instead of silently never connecting.
+const EVENTS_WIRE_PATH = "api/ability-strip/events";
 check(
-  stateAfterIdenticalPoll === stateSlot8,
-  "an unchanged poll must keep the same state object (no re-render)",
+  stream.url === EVENTS_WIRE_PATH,
+  `the stream must open the host half's own route, saw ${stream.url}`,
+);
+check(stream.closed === false, "the stream must stay open while the strip is mounted");
+check(loadCount === 1, `mounting must read once, saw ${loadCount}`);
+
+// --- Case 7a: a hidden tab must not spend a read on a frame ---------------
+let beforeHidden = loadCount;
+globalThis.document.visibilityState = "hidden";
+stream.emit("message", '{"version":2}');
+await flush();
+check(loadCount === beforeHidden, "a hidden tab must not spend a read on a frame");
+// Coming back must pick up what was dropped while hidden.
+globalThis.document.visibilityState = "visible";
+fireVisibility();
+await flush();
+check(loadCount > beforeHidden, "returning to the tab must read what a hidden tab skipped");
+// A visible tab re-reads on the frame that reports a change.
+beforeHidden = loadCount;
+stream.emit("message", '{"version":3}');
+await flush();
+check(loadCount > beforeHidden, "a visible tab must re-read when the registry changes");
+
+// --- Case 7b: a dead stream is stated, and costs exactly one read ---------
+// An `EventSource` that fails can stop for good (a fatal status is never retried),
+// and then nothing would ever push again: the row would freeze at its last numbers
+// and read exactly like "nothing changed" — the blind spot this plugin exists to
+// remove, moved into its own transport. So an error must re-read once, be visible,
+// and must not turn every retry into another read.
+let errReads = 0;
+const errProps = {
+  sessionId: "s7b",
+  load: async () => {
+    errReads += 1;
+    return payloadOk;
+  },
+};
+mount(errProps);
+await settle();
+const errStream = sources[sources.length - 1];
+check(sources.length > 0, "case 7b must open a stream");
+check(
+  findByLabel(render(errProps), "变更推送已断开") === undefined,
+  "a live stream must not claim the push is down",
+);
+const readsBeforeError = errReads;
+// A transient drop: `EventSource` will retry on its own (readyState stays CONNECTING).
+errStream.readyState = FakeEventSource.CONNECTING;
+errStream.emit("error");
+await flush();
+check(
+  errReads === readsBeforeError + 1,
+  `the first error must re-read exactly once, saw ${errReads} (before ${readsBeforeError})`,
 );
 check(
-  stateAfterIdenticalPoll.payload === payloadBefore,
-  "an unchanged poll must keep the same payload reference",
+  findByLabel(render(errProps), "变更推送已断开") !== undefined,
+  "an error must be visible on the collapsed row",
+);
+// A retry that fails again must NOT read again: one outage, one read.
+errStream.emit("error");
+await flush();
+check(errReads === readsBeforeError + 1, `a repeated error must not re-read, saw ${errReads}`);
+// The detail panel states it in words, not just as an 11 px mark.
+const expand7b = findButton(render(errProps), "明细");
+if (expand7b) expand7b.props.onClick();
+await flush();
+check(
+  has(textOf(render(errProps)), "变更推送已断开：下面这些数字不会再自动更新"),
+  "the detail panel must state that the pushed numbers stopped updating",
+);
+// Coming back re-arms the one-shot read and clears the mark.
+errStream.emit("open");
+await flush();
+check(
+  findByLabel(render(errProps), "变更推送已断开") === undefined,
+  "a reopened stream must clear the mark",
+);
+const readsBeforeSecondOutage = errReads;
+errStream.readyState = FakeEventSource.CLOSED;
+errStream.emit("error");
+await flush();
+check(
+  errReads === readsBeforeSecondOutage + 1,
+  `a second outage must re-read again, saw ${errReads} (before ${readsBeforeSecondOutage})`,
+);
+
+// --- Case 7c: coming back revives a stream that stopped for good ----------
+// Without this the row would stay stale until a page reload, and doing it with a
+// timer would reintroduce exactly what this design removed. Every other stub
+// source in this file is still CONNECTING or OPEN, so the closed one is the only
+// one that reopens and the count is exact.
+const reopenBefore = sources.length;
+globalThis.document.visibilityState = "visible";
+errStream.readyState = FakeEventSource.CLOSED;
+fireVisibility();
+await flush();
+check(
+  sources.length === reopenBefore + 1,
+  `a closed stream must be reopened when the reader comes back, saw ${sources.length} (before ${reopenBefore})`,
+);
+check(
+  sources[sources.length - 1].url === EVENTS_WIRE_PATH,
+  "a reopened stream must use the same route",
+);
+// Coming back with the stream still open must NOT open a second one: that would
+// leak a connection per tab switch.
+const noDuplicateBefore = sources.length;
+const liveAgain = sources[sources.length - 1];
+liveAgain.emit("open");
+fireVisibility();
+await flush();
+check(
+  sources.length === noDuplicateBefore,
+  `coming back with a live stream must not open another, saw ${sources.length} (before ${noDuplicateBefore})`,
+);
+
+// --- Case 8: an unchanged frame must not re-render ------------------------
+// The same answer arriving again must not reach setState with a NEW object: that
+// would rebuild the row and repaint for nothing. A change stream can deliver
+// several frames for one visible change, so this suppression is what keeps a burst
+// from becoming a burst of repaints. The stub's setState does not re-render, so
+// what is counted is the state object identity — a fresh object is exactly the
+// re-render React would schedule.
+const stablePayload = { ...payloadOk };
+const stableProps = { sessionId: "s8", load: async () => stablePayload };
+mount(stableProps);
+await settle();
+const stateSlot8 = hookState[1];
+check(stateSlot8?.phase === "ready", "case 8 must have read once before the frame");
+const payloadBefore = stateSlot8.payload;
+sources[sources.length - 1].emit("message", '{"version":4}');
+await flush();
+const stateAfterIdenticalFrame = hookState[1];
+check(
+  stateAfterIdenticalFrame === stateSlot8,
+  "a frame carrying an unchanged answer must keep the same state object (no re-render)",
+);
+check(
+  stateAfterIdenticalFrame.payload === payloadBefore,
+  "a frame carrying an unchanged answer must keep the same payload reference",
 );
 
 // A changed answer MUST produce a new state: suppression must not swallow news.
@@ -561,24 +763,21 @@ const changingProps = {
   sessionId: "s9",
   load: async () => (flipped ? { ...payloadOk, tools: { servers: [], totalTools: 0 } } : { ...payloadOk }),
 };
-const timerCountBefore9 = timers.length;
 mount(changingProps);
 await settle();
-check(timers.length > timerCountBefore9, "case 9 must register its own interval");
-const livePoll9 = timers[timers.length - 1];
 const stateSlot9 = hookState[1];
 flipped = true;
-livePoll9.fn();
-await new Promise((r) => setImmediate(r));
-check(hookState[1] !== stateSlot9, "a changed poll must produce new state (re-render)");
+sources[sources.length - 1].emit("message", '{"version":5}');
+await flush();
+check(hookState[1] !== stateSlot9, "a frame carrying a changed answer must produce new state (re-render)");
 check(
   (hookState[1].payload?.tools?.servers ?? []).length === 0,
-  "a changed poll must show the new answer",
+  "a changed frame must show the new answer",
 );
 
 // --- Case 10: a slow read must not stack requests -------------------------
-// Without an in-flight guard, a read that outlives the interval would be asked
-// again on every tick, piling up work against a Host that is already struggling.
+// Without the in-flight guard, a frame arriving while a read is still pending would
+// ask the Host again, piling up work against a Host that is already struggling.
 let slowCalls = 0;
 let release;
 const gate = new Promise((resolve) => {
@@ -592,31 +791,76 @@ const slowProps = {
     return payloadOk;
   },
 };
-const timerCountBefore10 = timers.length;
 mount(slowProps);
-// Flush the effects so the interval is registered and the mount read is STARTED.
-// The read itself stays pending on the gate, which is the state under test.
+// Flush the effects so the stream is open and the mount read is STARTED. The read
+// itself stays pending on the gate, which is the state under test.
 for (const fn of [...effects]) await fn();
-check(timers.length > timerCountBefore10, "case 10 must register its own interval");
-const livePoll10 = timers[timers.length - 1];
-await new Promise((r) => setImmediate(r));
-const callsBeforeTicks = slowCalls;
-check(callsBeforeTicks >= 1, "the mount read must have started");
-// Fire three ticks while the first read is still pending.
-livePoll10.fn();
-livePoll10.fn();
-livePoll10.fn();
-await new Promise((r) => setImmediate(r));
+await flush();
+const callsBeforeFrames = slowCalls;
+check(callsBeforeFrames >= 1, "the mount read must have started");
+// Three frames while the first read is still pending.
+const stream10 = sources[sources.length - 1];
+stream10.emit("message", '{"version":6}');
+stream10.emit("message", '{"version":7}');
+stream10.emit("message", '{"version":8}');
+await flush();
 check(
-  slowCalls === callsBeforeTicks,
-  `ticks during an in-flight read must not start another (saw ${slowCalls}, before ${callsBeforeTicks})`,
+  slowCalls === callsBeforeFrames,
+  `frames during an in-flight read must not start another (saw ${slowCalls}, before ${callsBeforeFrames})`,
 );
-// Releasing the gate lets the pending read finish; the next tick may then run.
+// Releasing the gate lets the pending read finish; the dropped frames collapse into
+// ONE compensating read, not one per frame.
 release();
-await new Promise((r) => setImmediate(r));
-livePoll10.fn();
-await new Promise((r) => setImmediate(r));
-check(slowCalls > callsBeforeTicks, "after the in-flight read settles, a tick must read again");
+await flush();
+check(
+  slowCalls === callsBeforeFrames + 1,
+  `a burst of frames during a read must collapse into one compensating read, saw ${slowCalls} (before ${callsBeforeFrames})`,
+);
+
+// --- Case 11: opening the panel reads -------------------------------------
+// The MCP answer is pushed, but skills and bundles have no change signal of their
+// own: opening the panel is the reader asking for detail, so it re-reads once.
+let openCount = 0;
+const openProps = {
+  sessionId: "s11",
+  load: async () => {
+    openCount += 1;
+    return payloadOk;
+  },
+};
+mount(openProps);
+await settle();
+const beforeExpand = openCount;
+const expandCase11 = findButton(render(openProps), "明细");
+check(expandCase11 !== undefined, "case 11 must find the expand control");
+if (expandCase11) expandCase11.props.onClick();
+await flush();
+check(openCount === beforeExpand + 1, `opening the panel must read once, saw ${openCount} (before ${beforeExpand})`);
+// Collapsing is not a request for data.
+const reopenCount = openCount;
+const collapseCase11 = findButton(render(openProps), "明细");
+if (collapseCase11) collapseCase11.props.onClick();
+await flush();
+check(openCount === reopenCount, "closing the panel must not read");
+
+// --- Case 12: unmounting closes the stream --------------------------------
+// A closed row must not leave an open HTTP response (and its subscriber) behind.
+mount(okProps);
+await settle();
+const stream12 = sources[sources.length - 1];
+const visibilityBefore = documentListeners.filter((e) => e.type === "visibilitychange").length;
+check(stream12.closed === false, "case 12 must open a stream before unmounting");
+await unmount();
+check(stream12.closed === true, "unmounting must close the change stream");
+check(
+  documentListeners.filter((e) => e.type === "visibilitychange").length < visibilityBefore,
+  "unmounting must drop the visibility listener",
+);
+
+// --- The mechanism, stated once more over every case above ----------------
+// Any of the mounts above reintroducing a self-refresh timer fails here, whatever
+// it was for.
+check(timers.length === 0, `no mount may register an interval, saw ${timers.length}`);
 
 console.log("---");
 if (problems.length > 0) {

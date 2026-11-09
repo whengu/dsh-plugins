@@ -11,11 +11,13 @@
  *
  *   - read `ctx.tools.schemas()`, split the names on the `mcp__<server>__<tool>`
  *     convention the MCP client itself uses, and count tools per server;
- *   - serve the result on one exact, owner-only Connection route.
+ *   - serve the result on one exact, owner-only Connection route;
+ *   - hold one Server-Sent Events stream per browser tab that says "the registry
+ *     moved" the moment it does, so the strip never has to run a timer.
  *
  * It is read-only: it registers no tool, mutates no registry, edits no config, and
  * holds no state between requests. There is nothing to synchronize and nothing to
- * dispose beyond the route itself.
+ * dispose beyond the two routes and the streams they opened.
  *
  * @module dsh-ability-strip
  */
@@ -38,6 +40,15 @@ export const ROUTE_CHANNEL = "/api";
  * `<channel>/<endpoint>`, so this value and the client's must stay identical.
  */
 export const ROUTE_ENDPOINT = "ability-strip";
+
+/**
+ * Endpoint carrying the registry **change** signal, as a Server-Sent Events
+ * stream. A sub-path rather than a second method on {@link ROUTE_ENDPOINT}: the
+ * answer route is request/response and POST-only (`rpc.call` has no other
+ * verb), while this one is an open GET stream, and giving each its own path
+ * keeps both contracts readable and independently testable.
+ */
+export const ROUTE_EVENTS_ENDPOINT = "ability-strip/events";
 
 /** Prefix the MCP client puts on every tool it registers. */
 const MCP_TOOL_PREFIX = "mcp__";
@@ -120,44 +131,86 @@ export function readToolSummary(ctx) {
 }
 
 /**
- * Wrap {@link readToolSummary} in a cache invalidated by the registry itself.
+ * Wrap {@link readToolSummary} in a cache invalidated by the registry itself, and
+ * hand out the same invalidation as a change signal.
  *
- * `ctx.tools.schemas()` deep-clones every visible tool, so calling it on each poll
- * would copy the whole catalog four times a minute for an answer that almost never
- * changes. The Host already knows when the answer changes: it emits `tools/change`
- * on every registration, unregistration, and scoped restriction. Hooking that
- * event makes the cache exact — it is dropped precisely when it could be stale,
- * never on a timer.
+ * `ctx.tools.schemas()` deep-clones every visible tool, so calling it on each read
+ * would copy the whole catalog. The Host already knows when the answer changes: it
+ * emits `tools/change` on every registration, unregistration, and scoped
+ * restriction. Hooking that event makes the cache exact — it is dropped precisely
+ * when it could be stale, never on a timer.
+ *
+ * The same single listener feeds {@link createToolSummaryReader}'s change version,
+ * which is what the browser's event stream relays. One `tools/change` subscription
+ * serves both purposes: an invalidation and a notification are the same fact.
  * @param ctx - Host context providing `tools`.
- * @returns a reader returning the current summary, and its disposer.
+ * @returns the current summary reader, its change subscriptions, and its disposer.
  */
 export function createToolSummaryReader(ctx) {
 	let cached;
+	/** Bumped once per `tools/change`; read by the event stream, never by a read. */
+	let version = 0;
+	/** Open change streams (one per browser tab) waiting for the next bump. */
+	const listeners = new Set();
 	const invalidate = () => {
 		cached = void 0;
+		version += 1;
+		// A copy, so a listener that detaches while being notified cannot disturb
+		// the set being walked.
+		for (const listener of [...listeners]) listener(version);
 	};
 	const off = ctx.on("tools/change", invalidate);
 	return {
 		read() {
 			// Cache only successful reads. A transient failure (registry not yet
-			// ready, a momentary error) must not stick: the next poll should retry,
+			// ready, a momentary error) must not stick: the next read should retry,
 			// not keep serving the stale error until the next `tools/change`.
 			if (cached !== void 0) return cached;
 			const result = readToolSummary(ctx);
 			if (result.ok) cached = result;
 			return result;
 		},
+		/**
+		 * Subscribe to registry changes without reading the registry.
+		 *
+		 * The listener runs once per change and never on subscribe: a new stream
+		 * writes the current version itself, which is what lets a browser close
+		 * the gap between its own read and this stream opening.
+		 * @param listener - called with the new version on every change.
+		 * @returns the disposer detaching this listener.
+		 */
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		/** Current change version: starts at 0, one bump per registry change. */
+		get version() {
+			return version;
+		},
+		/**
+		 * How many change streams are currently attached.
+		 *
+		 * Read-only introspection, and the one thing that makes the leak invariant
+		 * testable: every way a stream can end must leave this at 0, or a dead tab's
+		 * subscriber outlives its stream for the life of the process.
+		 */
+		get subscribers() {
+			return listeners.size;
+		},
 		dispose() {
 			off();
+			listeners.clear();
 		},
 	};
 }
 
 /**
- * Plugin body: register the one route the browser calls.
+ * Plugin body: register the answer route and the change stream.
  *
- * The route speaks the shared `/api` carrier's client-request envelope, which is
- * what `connection.rpc.call(channel, endpoint, payload)` puts on the wire:
+ * The answer route speaks the shared `/api` carrier's client-request envelope,
+ * which is what `connection.rpc.call(channel, endpoint, payload)` puts on the wire:
  *
  *   request   { type: 'client-request',  rpcId, payload: { action, data } }
  *   response  { type: 'server-response', rpcId, result }
@@ -167,10 +220,14 @@ export function createToolSummaryReader(ctx) {
  */
 export function apply(ctx) {
 	ctx.effect(() => {
-		// One reader per Loader row, cached and invalidated by `tools/change`: the
-		// poll then costs nothing until the registry actually moves.
+		// One reader per Loader row: cached, invalidated by `tools/change`, and the
+		// single owner of the change subscription both routes share.
 		const reader = createToolSummaryReader(ctx);
-		const dispose = ctx.connection.fetch.register({
+		// Streams this row has open right now. The carrier tears the routes down on
+		// unload, but an open `ReadableStream` has no idea its route is gone: it
+		// would keep the response body (and any subscriber) alive forever.
+		const streams = new Set();
+		const disposeSummary = ctx.connection.fetch.register({
 			path: `${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}`,
 			// `rpc.call` always POSTs; the read carries no body of its own.
 			methods: ["POST"],
@@ -204,14 +261,120 @@ export function apply(ctx) {
 				});
 			},
 		});
+		const disposeEvents = ctx.connection.fetch.register({
+			path: `${ROUTE_CHANNEL}/${ROUTE_EVENTS_ENDPOINT}`,
+			// A browser `EventSource` opens this with GET and keeps it open.
+			methods: ["GET"],
+			requestBody: "buffered",
+			// Nothing here reads the registry: the stream carries the change counter
+			// only, so opening or holding it costs no `schemas()` clone.
+			fetch: (request) => openEventStream(reader, request, streams),
+		});
 		// `register` returns an async disposer; Cordis awaits it on unload. The
 		// `tools/change` listener must go with it, or an unloaded row would keep a
-		// listener on a live service.
+		// listener on a live service; the open streams must go too, or they outlive
+		// the routes that serve them.
 		return () => {
+			for (const shutdown of [...streams]) shutdown();
 			reader.dispose();
-			void dispose();
+			void disposeSummary();
+			void disposeEvents();
 		};
-	}, "ability-strip: tool route");
+	}, "ability-strip: tool route + change stream");
+}
+
+/**
+ * Serialize one Server-Sent Events data frame.
+ * @param payload - JSON-safe frame body.
+ * @returns the complete frame, terminator included.
+ */
+function sseFrame(payload) {
+	return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+/**
+ * Serve one registry change stream to one browser tab.
+ *
+ * The stream says *that* the registry moved, never *what* it now holds: the
+ * browser answers a frame by calling the answer route, so this path stays free of
+ * registry reads and of any per-client state beyond an open response body.
+ *
+ * End points by path:
+ *   - the browser goes away            request signal aborts → close the body
+ *   - the plugin unloads              `streams` disposer → close the body
+ *   - the consumer cancels the body   `cancel` → detach the subscriber
+ *
+ * Closing the body matters for more than tidiness: the carrier's request bridge
+ * drains the response body until it ends, so a body nobody closes would leak one
+ * responder and one subscriber per abandoned tab.
+ *
+ * Exported so the leak invariant can be proven per teardown path (the reader the
+ * route gets is created inside `apply` and is not reachable from outside).
+ * @param reader - the shared registry reader and its change subscription.
+ * @param request - the open GET request (its signal tracks the browser).
+ * @param streams - open-stream registry, so unload can end this one.
+ * @returns the streaming response.
+ */
+export function openEventStream(reader, request, streams) {
+	const encoder = new TextEncoder();
+	let controller;
+	let detach = () => {};
+	// The single teardown gate. One flag, not two: a separate "closed" flag would
+	// have to be set by the same paths that must still run the teardown, and any
+	// path that set it without tearing down would leave the subscriber attached
+	// for the lifetime of the process.
+	let cleaned = false;
+	const shutdown = () => {
+		if (cleaned) return;
+		cleaned = true;
+		streams.delete(shutdown);
+		detach();
+		try {
+			controller?.close();
+		} catch {
+			// Already errored or cancelled: nothing left to close.
+		}
+	};
+	const body = new ReadableStream({
+		start(target) {
+			controller = target;
+			const send = (text) => {
+				if (cleaned) return;
+				try {
+					controller.enqueue(encoder.encode(text));
+				} catch {
+					// The body no longer accepts writes, so this stream is over. Tearing
+					// it down here (rather than only flagging it) is the whole point of
+					// the catch: a flagged-but-not-torn-down stream would keep its
+					// subscriber and its `streams` entry forever.
+					shutdown();
+				}
+			};
+			streams.add(shutdown);
+			// Any frame means "re-read". The one written on connect closes the gap
+			// between the browser's own read and this stream opening — and the gap a
+			// dropped stream leaves behind, since `EventSource` reconnects by itself.
+			// The number is for anyone reading the wire, not for the browser.
+			detach = reader.subscribe((version) => send(sseFrame({ version })));
+			send(": ability-strip\n\n");
+			send(sseFrame({ version: reader.version }));
+			request.signal?.addEventListener("abort", shutdown, { once: true });
+			if (request.signal?.aborted === true) shutdown();
+		},
+		cancel() {
+			shutdown();
+		},
+	});
+	return new Response(body, {
+		status: 200,
+		headers: {
+			// The exact prefix the Host's gzip filter skips, so the body is never
+			// buffered into one lump by the compression middleware.
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache",
+			connection: "keep-alive",
+		},
+	});
 }
 
 /**

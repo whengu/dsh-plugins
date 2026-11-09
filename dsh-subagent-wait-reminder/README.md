@@ -77,7 +77,7 @@
 
 已于 2026-11-02 以 tarball 装入 web profile（0.1.0）；2026-11-03 随单仓库迁移移至 `dsh-plugins\dsh-subagent-wait-reminder` 并从新路径重新登记（相同字节重装，安装副本哈希逐字节一致）。
 
-跨插件铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录/link 安装等）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令与记录。本插件是**纯 Host 侧**插件（无 `dsh.client`）：Host 不需要重启，也不涉及浏览器 `Ctrl+F5`。
+跨插件铁律（只从 tarball 安装、`dist/` 不可覆盖不可删、禁止目录/link 安装等）见仓库根 [INSTALL.md](../INSTALL.md)——本文件不复述，只放本插件自己的命令与记录。本插件是**纯 Host 侧**插件（无 `dsh.client`）：**每次发版都必须重启 Host 进程才生效**（ESM 模块缓存，`dsh-hmr` 不重新求值宿主模块），也不涉及浏览器 `Ctrl+F5`。
 
 ### 打包前检查（只读源码，不碰 profile）
 
@@ -98,7 +98,7 @@ dsh plugin --profile web add ./dist/dsh-subagent-wait-reminder-<版本>.tgz   # 
 dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完整 40 位 SHA>&path:/dsh-subagent-wait-reminder"
 ```
 
-两种方式等效，可各机器混用；对比与取舍见仓库根 [INSTALL.md §11.2](../INSTALL.md#112-两种方式怎么选)，方式 B 的验证状态见 [§11.4](../INSTALL.md#114-方式-bgit-源直接安装)。本插件是**纯 Host 侧**插件（无 `dsh.client`）：Host 不需要重启，也不涉及浏览器 `Ctrl+F5`。
+两种方式等效，可各机器混用；对比与取舍见仓库根 [INSTALL.md §11.2](../INSTALL.md#112-两种方式怎么选)，方式 B 的验证状态见 [§11.4](../INSTALL.md#114-方式-bgit-源直接安装)。本插件是**纯 Host 侧**插件（无 `dsh.client`）：**每次发版都要重启 Host 进程**才生效，也不涉及浏览器 `Ctrl+F5`。
 
 ### 验证登记形态
 

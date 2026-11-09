@@ -15,9 +15,12 @@
  * profile's enabled bundles. A fault (MCP enabled but zero tools) opens a dialog
  * on its own.
  *
- * Read-only by construction: it calls three read-only Remotes plus one read of
- * its own host half. It registers no tool, writes no setting, and changes no
- * content.
+ * Read-only by construction: it calls three read-only Remotes, reads its own host
+ * half, and subscribes to that half's change stream. It registers no tool, writes
+ * no setting, and changes no content. Nothing here runs on a timer: the stream
+ * pushes when the tool registry moves, and a read is issued only in response to
+ * something that actually happened (a frame, opening the panel, returning to the
+ * tab, or the reader pressing refresh).
  *
  * Lazy-CJS bundle form: executing this script only registers the factory;
  * every module-body side effect lives inside it.
@@ -65,6 +68,13 @@ window.__ModuleLoader__.load({
 		const MCP_RESOURCES_MODULE = "@deepseek-ai/dsh-mcp-resources";
 
 		/**
+		 * Carrier channel both halves use: the shared `/api` route the client
+		 * `Connection` mounts. The leading slash is load-bearing — see
+		 * {@link EVENTS_PATH} and `readTools`.
+		 */
+		const API_CHANNEL = "/api";
+
+		/**
 		 * Endpoint this package's host half owns inside the shared `/api` channel.
 		 * Must stay identical to `ROUTE_ENDPOINT` in `lib/index.js`: the host
 		 * registers `path: /api/<endpoint>` and `rpc.call` posts to the same pair.
@@ -72,15 +82,22 @@ window.__ModuleLoader__.load({
 		const TOOL_ENDPOINT = "ability-strip";
 
 		/**
-		 * How often the strip re-reads on its own, in milliseconds.
-		 *
-		 * The registry is read, not watched: DSH emits `tools/change` on the Host,
-		 * but forwarding that to the browser requires a Typert Remote Event
-		 * declaration — far more machinery than a read-only strip justifies. Fifteen
-		 * seconds is frequent enough that a dropped server shows up while the reader
-		 * is still looking, and cheap enough that four reads per minute are invisible.
+		 * Endpoint of the host half's registry **change stream** (`ROUTE_EVENTS_ENDPOINT`
+		 * there, which this must equal). The host keeps it open and writes one frame
+		 * per `tools/change`; the strip answers a frame by re-reading, so the MCP
+		 * answer stays live without any timer on this page.
 		 */
-		const POLL_INTERVAL_MS = 15_000;
+		const EVENTS_ENDPOINT = "ability-strip/events";
+
+		/**
+		 * Change stream as a **document-relative** path.
+		 *
+		 * `rpc.call` builds `${channel}/${endpoint}` and then slices the leading
+		 * slash off, and web routes are document-relative for the same reason: an app
+		 * served below a base path would never match a route resolved from "/". The
+		 * same slice is applied here deliberately, not for symmetry.
+		 */
+		const EVENTS_PATH = `${API_CHANNEL}/${EVENTS_ENDPOINT}`.slice(1);
 
 		/** Muted inline text for a pending or absent answer. */
 		const MUTED = { fontSize: 11, opacity: 0.55 };
@@ -115,12 +132,14 @@ window.__ModuleLoader__.load({
 		/**
 		 * Compare two payloads by the fields the strip actually renders.
 		 *
-		 * A poll exists to notice a changed answer, so an identical answer must not
-		 * reach `setState`: that would rebuild the row, invalidate the memo, and
-		 * repaint every interval for nothing. `loadedAt` is deliberately excluded —
-		 * it always differs, and suppressing it means the panel's "读取于" timestamp
-		 * reflects when the visible content was actually obtained, not when the last
-		 * poll happened.
+		 * A silent refresh exists to notice a changed answer, so an identical answer
+		 * must not reach `setState`: that would rebuild the row, invalidate the memo,
+		 * and repaint for nothing. A change stream can deliver several frames for one
+		 * visible change (a tool registration touches several layers), so this is
+		 * what keeps a burst of frames from becoming a burst of repaints.
+		 * `loadedAt` is deliberately excluded — it always differs, and suppressing it
+		 * means the panel's "读取于" timestamp reflects when the visible content was
+		 * actually obtained, not when the last read happened.
 		 * @param previous - payload currently on screen, possibly undefined.
 		 * @param next - payload just read.
 		 * @returns true when nothing the reader sees has changed.
@@ -292,11 +311,11 @@ window.__ModuleLoader__.load({
 		async function readTools(connection) {
 			if (connection === void 0) return { error: "connection 服务未挂载" };
 			try {
-				// Channel `/api`, endpoint `ability-strip` — the same pair the host half
-				// registers as the route path below `/api`. The leading slash is NOT
-				// cosmetic: `rpc.call` builds the URL as `${channel}/${endpoint}`.slice(1),
-				// so `"api"` gets sliced to `"pi/..."` and misses the route entirely.
-				const response = await connection.rpc.call("/api", TOOL_ENDPOINT, void 0);
+				// The same channel/endpoint pair `EVENTS_PATH` is built from.
+				// `rpc.call` composes `${channel}/${endpoint}` and slices the leading
+				// slash, so `API_CHANNEL` must keep it: "api" alone becomes "pi/..."
+				// and misses the route entirely.
+				const response = await connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, void 0);
 				if (!response.ok) {
 					return { error: `${response.error?.code ?? "unknown"}: ${response.error?.message ?? "连接失败"}` };
 				}
@@ -433,9 +452,19 @@ window.__ModuleLoader__.load({
 			const [state, setState] = React.useState({ phase: "idle" });
 			// The fault dialog opens itself once per fault, and can be re-opened from
 			// the MCP mark. `acknowledged` remembers the fault the reader has already
-			// seen, so a 15-second poll cannot re-nag every tick.
+			// seen, so a change stream that keeps reporting the same fault cannot
+			// re-nag on every frame.
 			const [alertOpen, setAlertOpen] = React.useState(false);
 			const acknowledgedFault = React.useRef(void 0);
+			// Whether the change stream is currently believed dead.
+			//
+			// A dead stream is the one failure this row cannot otherwise show: every
+			// number would simply freeze at its last value, which reads exactly like
+			// "nothing changed" — the blind spot this plugin exists to remove, just
+			// moved into its own transport. Set on an `EventSource` error, cleared when
+			// the stream comes back, and rendered in both the collapsed row and the
+			// detail panel.
+			const [pushLost, setPushLost] = React.useState(false);
 			// The floating panel is placed from this row's live rect.
 			const anchorRef = React.useRef(null);
 
@@ -451,13 +480,15 @@ window.__ModuleLoader__.load({
 			// Monotonic request id: a superseded fetch must not overwrite the newer
 			// answer when the reader switches sessions mid-flight.
 			const requestId = React.useRef(0);
-			// In-flight guard for the poll. Without it a read that outlives the
-			// interval would stack requests on every tick.
+			// In-flight guard. Without it a stream frame arriving while a read is
+			// already running would stack a second read on the same Host.
 			const inFlight = React.useRef(false);
 			// When `run` is called while a read is in flight (session switch, manual
-			// refresh during a poll), the caller's result must replace the in-flight
+			// refresh, another frame), the caller's result must replace the in-flight
 			// one. Without this the in-flight read's result would be written to the
-			// new session's state because `requestId` was never incremented.
+			// new session's state because `requestId` was never incremented. A boolean
+			// rather than a queue on purpose: a burst of frames collapses into one
+			// compensating read instead of one read per frame.
 			const rerunPending = React.useRef(false);
 
 			const run = React.useCallback(
@@ -467,7 +498,7 @@ window.__ModuleLoader__.load({
 					// no catalog to read: stay pending rather than reporting a failure.
 					if (sessionId === void 0) return;
 					// One read at a time. A slow Host must not be asked again before it
-					// answered: the tick simply skips and the next one retries.
+					// answered: this call is dropped (and compensated) instead.
 					if (inFlight.current) {
 						// Invalidate the in-flight read so its stale result is discarded,
 						// and schedule a re-read when it settles.
@@ -478,9 +509,10 @@ window.__ModuleLoader__.load({
 					inFlight.current = true;
 					const id = requestId.current + 1;
 					requestId.current = id;
-					// A silent re-read (the poll) must not flip the strip into its loading
-					// state on every tick: that would repaint the row and, worse, look like
-					// a user-initiated read. Only an explicit refresh shows progress.
+					// A silent re-read (a stream frame, returning to the tab, opening the
+					// panel) must not flip the strip into its loading state: that would
+					// repaint the row and, worse, look like a user-initiated read. Only an
+					// explicit refresh shows progress.
 					if (options?.silent !== true) {
 						// Keep the previous payload while re-reading so a refresh does not
 						// blank the strip mid-flight.
@@ -489,9 +521,9 @@ window.__ModuleLoader__.load({
 					try {
 						const payload = await loadRef.current(sessionId);
 						if (id !== requestId.current) return;
-						// A poll that returns exactly what is already on screen must not
-						// re-render: every 15 s of identical data would otherwise rebuild
-						// the row, invalidate the memo, and repaint for nothing.
+						// A silent re-read that returns exactly what is already on screen
+						// must not re-render: the same answer would otherwise rebuild the
+						// row, invalidate the memo, and repaint for nothing.
 						setState((prev) =>
 							options?.silent === true && samePayload(prev.payload, payload)
 								? prev
@@ -501,7 +533,7 @@ window.__ModuleLoader__.load({
 						if (id !== requestId.current) return;
 						// A thrown load must be visible: the strip exists to remove blind
 						// spots, so a silent failure would defeat its only purpose. A failed
-						// poll keeps the last good payload and states the failure.
+						// re-read keeps the last good payload and states the failure.
 						setState((prev) => ({ ...prev, phase: "failed", error: describeError(error) }));
 					} finally {
 						inFlight.current = false;
@@ -515,34 +547,79 @@ window.__ModuleLoader__.load({
 				[sessionId],
 			);
 
+			// The stream's frame handler outlives any single `run` closure (a new
+			// Session mints a new one), so it reads the current one from a ref instead
+			// of forcing the stream to be torn down and reopened on every switch.
+			const runRef = React.useRef(run);
+			React.useEffect(() => {
+				runRef.current = run;
+			}, [run]);
+
+			// First read, once per Session.
 			React.useEffect(() => {
 				void run();
 			}, [run, sessionId]);
 
-			// The registry is read live, not watched: DSH emits `tools/change` on the
-			// Host, but forwarding it to the browser needs a Typert Remote Event
-			// declaration, which is a much larger change than this strip warrants.
-			// Polling keeps the MCP answer honest without that machinery.
+			// Live, without a timer: the host half holds a change stream open and writes
+			// a frame whenever the tool registry moves, so an MCP server dropping or a
+			// new tool appearing reaches this row at the moment it happens. There is no
+			// interval anywhere — an idle tab with nothing changing costs one open
+			// connection and zero requests.
+			//
+			// DSH's own `ctx.remote.$on` cannot carry this: the forwarded-event
+			// allowlist is a closed array inside `dsh-api-remotes` (no `tools/change`),
+			// and `typertGateway.registerRemoteEvents` is a single-application slot
+			// that bundle already owns. So the signal travels on this package's own
+			// route instead — the same owner-only carrier the answer route uses.
 			React.useEffect(() => {
 				if (sessionId === void 0) return void 0;
-				let timer;
-				const tick = () => {
-					// A hidden tab has no reader: skip the read entirely and pick up
-					// again on the next visible tick.
-					if (document.visibilityState === "visible") void run({ silent: true });
+				let source;
+				// One compensating read per outage. `EventSource` retries a transient
+				// drop on its own schedule, so without this flag every retry would also
+				// cost a read; with it, an outage costs exactly one.
+				let compensated = false;
+				/** The stream is (believed) alive again: re-arm the one-shot read. */
+				const live = () => {
+					compensated = false;
+					setPushLost(false);
 				};
-				timer = setInterval(tick, POLL_INTERVAL_MS);
-				// Returning to the tab re-reads immediately instead of waiting a full
-				// interval, so the answer is current when the reader looks at it.
+				const connect = () => {
+					source = new EventSource(EVENTS_PATH);
+					source.addEventListener("open", live);
+					source.addEventListener("message", () => {
+						live();
+						// A hidden tab has no reader: skip the read and let the visibility
+						// handler below pick it up when the reader comes back.
+						if (document.visibilityState === "visible") void runRef.current({ silent: true });
+					});
+					source.addEventListener("error", () => {
+						// Either the browser is about to retry (a transient drop) or it has
+						// given up for good (a fatal status, which `EventSource` never
+						// retries). Both mean this row is no longer being pushed, so say so
+						// — and re-read once, because that read is also the evidence that
+						// the transport died rather than the registry.
+						setPushLost(true);
+						if (compensated) return;
+						compensated = true;
+						if (document.visibilityState === "visible") void runRef.current({ silent: true });
+					});
+				};
+				connect();
+				// Returning to the tab reads immediately, and — since a fatal stream
+				// failure makes `EventSource` stop retrying altogether — also reopens a
+				// stream that is closed. Neither needs a timer: the reader coming back is
+				// the event.
 				const onVisible = () => {
-					if (document.visibilityState === "visible") void run({ silent: true });
+					if (document.visibilityState !== "visible") return;
+					if (source.readyState === EventSource.CLOSED) connect();
+					void runRef.current({ silent: true });
 				};
 				document.addEventListener("visibilitychange", onVisible);
 				return () => {
-					clearInterval(timer);
+					source.close();
 					document.removeEventListener("visibilitychange", onVisible);
 				};
-			}, [run, sessionId]);
+			}, [sessionId]);
 
 			const payload = state.payload;
 			const skillCount = payload?.skills?.entries?.length;
@@ -750,6 +827,22 @@ window.__ModuleLoader__.load({
 						count: connectedServers.length,
 						note: connected ? `${totalMcpTools} 个工具` : "未连接",
 					}),
+					// A dead change stream is stated before the numbers it affects, not
+					// after: the reader is about to trust them.
+					pushLost
+						? h(
+								"div",
+								{
+									style: {
+										fontSize: 11.5,
+										lineHeight: 1.5,
+										padding: "4px 0",
+										color: "var(--dsw-alias-state-warn-primary)",
+									},
+								},
+								"变更推送已断开：下面这些数字不会再自动更新。点右上角刷新重读，切回标签页也会重读。",
+							)
+						: null,
 					// The connected list is the answer to "does it actually work":
 					// these servers have tools registered in the live registry.
 					tools.error !== void 0
@@ -831,7 +924,7 @@ window.__ModuleLoader__.load({
 					h(
 						"div",
 						{ style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5, paddingTop: 5 } },
-						"判据是工具注册表里存在 mcp__<server>__* 工具，每 15 秒自动重读一次（页面可见时）。",
+						"判据是工具注册表里存在 mcp__<server>__* 工具；工具注册表一变，这里就立刻跟着变（宿主主动推送，不定时轮询）。",
 						"连不上、或连上但没暴露工具的服务器，都算未连接——两种情况下它的工具都用不了。",
 					),
 				);
@@ -913,7 +1006,14 @@ window.__ModuleLoader__.load({
 						"aria-expanded": open,
 						"aria-label": open ? "收起明细" : "展开明细",
 						title: open ? "收起明细" : "明细",
-						onClick: () => setOpen((prev) => !prev),
+						onClick: () => {
+							// Opening the panel is a request for detail, so it reads: the
+							// stream already keeps the MCP answer live, but the skill and
+							// plugin blocks have no change signal of their own, and this is
+							// the one moment the reader asks to see them.
+							if (!open) void run({ silent: true });
+							setOpen((prev) => !prev);
+						},
 						onMouseDown: (event) => event.stopPropagation(),
 						style: {
 							display: "inline-flex",
@@ -929,6 +1029,24 @@ window.__ModuleLoader__.load({
 					renderSkillChip(),
 					h("span", { style: { height: 10, display: "flex" } }, h(Divider, { vertical: true })),
 					renderMcpChip(),
+					// Only present while the stream is dead, so the healthy row keeps the
+					// width it was measured at: zero cost when nothing is wrong, and an
+					// 11 px mark instead of a silent freeze when something is.
+					pushLost
+						? h(
+								"span",
+								{
+									title: "变更推送已断开：数字不会自动更新，点开明细查看",
+									"aria-label": "变更推送已断开",
+									style: {
+										display: "flex",
+										alignItems: "center",
+										color: "var(--dsw-alias-state-warn-primary)",
+									},
+								},
+								h(ui.IconWarningOutlineRegular, { size: 11 }),
+							)
+						: null,
 				),
 				state.phase === "failed"
 					? h(

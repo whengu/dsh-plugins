@@ -4,8 +4,10 @@
 >
 > 本文件是**本仓库所有插件共用的唯一安装权威**：安装铁律、为什么禁 `link:`、发版流程、排错表、目录骨架、单仓库管理。插件自己的具体命令在各插件 `README.md` 的「安装」节。
 >
-> 本文由 AI 编写（DeepSeek 编程智能体）。命令均在本机实测，机制对照 DSH `0.2.1-rc.5` 源码核对（pnpm `12.9.1`，Windows）。
-> 沿革：`dsh-ability-strip/INSTALL.md`（2026-10-28）→ 工作区级 `dsh-plugin-dev-guide.md`（2026-11-03）→ 本仓库根 `INSTALL.md`（2026-11-04，收入仓库以保证仓库自洽）。
+> ⚠️ **本规约在若干处有意偏离 DSH 官方默认做法**（`link:` 安装、安装入口、客户端依赖）。**官方权威出处、原文引用、以及每处偏离的原因与代价，全部记在 [§15 官方口径与偏离记录](#15-官方口径与偏离记录)。** 动手前先读那一节，不要把我们仓库的取舍误当成 DSH 的规则。
+>
+> 本文由 AI 编写（DeepSeek 编程智能体）。命令均在本机实测，机制对照 DSH `0.2.2-rc.1` 源码核对（pnpm `12.9.1`，Windows）。
+> 沿革：`dsh-ability-strip/INSTALL.md`（2026-10-28）→ 工作区级 `dsh-plugin-dev-guide.md`（2026-11-03）→ 本仓库根 `INSTALL.md`（2026-11-04，收入仓库以保证仓库自洽）→ 2026-11-09 补入官方口径与偏离记录。
 
 ## 0. 先记住这条铁律
 
@@ -18,7 +20,9 @@
 
 正确安装（tarball）之后，这两者之间**没有任何链接**：改源码不会改安装副本，页面不会变。想让线上更新，必须显式执行一次「重新打包 + 重新安装」——这是一次可审阅的版本切换，而不是顺手保存就生效。
 
-反面做法（目录安装 / `link:`）会让两者变成同一份文件：你保存一次源码，用户页面就变一次，没有评审、没有版本、没法回滚。**本项目明令禁止这种方式。**
+反面做法（目录安装 / `link:`）会让两者变成同一份文件：你保存一次源码，用户页面就变一次，没有评审、没有版本、没法回滚。**本仓库明令禁止用这种方式做发布。**
+
+> 必须说清的边界：**官方文档把"目录安装即链接源码"当作本地开发循环**（见 [§15](#15-官方口径与偏离记录)）。本仓库禁止它是为了**发布隔离**，不是因为它违反 DSH 规则。两者不冲突——但你要知道自己站在"更严"的一侧，代价是放弃了官方那种"改完即生效"的热迭代体验。开发期想看效果请走 §3（不装），发布走 tarball 或 git 源（§11）。
 
 本机实测证据（dsh-ability-strip 0.3.0）：
 
@@ -146,7 +150,11 @@ dsh plugin --profile web add "git+https://github.com/whengu/dsh-plugins.git#<完
 - **方式 B 的写法要点**：SHA 用完整 40 位；不需要站在插件目录里；只能装远端已有的 commit。详细说明与验证状态见 §11.4。
 - `dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，然后：检查 `engines.dsh` 兼容性 → 把声明了 `dsh.bundle.patch` 的包追加进 `dsh.profile.bundles`。
 - 第一次对不存在的 profile 名执行会自动初始化一个空 profile——这很容易造成「装到了幽灵 profile、页面永远没效果」的困惑。务必用实际启动的那个 profile 名；**不要为了测试新建 profile**。
-- Host **不需要重启**：`dsh-hmr` 监视 profile 清单并重组层；但浏览器按 bundle revision 缓存客户端代码，必须 `Ctrl+F5` 硬刷新。
+- **重启规则（按改的是哪一半区分，别一概而论）**：
+  - **只改浏览器半边**（`lib/client.js`）→ Host **不需要重启**，`dsh-hmr` 重组层 + 浏览器 `Ctrl+F5` 硬刷新即可。
+  - **改了宿主半边代码**（`lib/index.js`，或任何被 Host `import` 的模块）→ **必须重启 Host 进程**。原因：Loader 用普通 ES Module `import()` 载入宿主模块，同一 specifier 一律命中 Node 的 ESM 缓存，`dsh-hmr` 只是重写 patch/清单并重组 Loader 树，**不会重新求值模块**。
+  - `engines.dsh`/`cordis.patch.yml`/profile 清单这类**层结构变化**由 `dsh-hmr` 处理后即可生效，但**它不会让已被缓存求值过的宿主模块重新执行**。
+  - 实测证据（2026-11-09，本机）：安装带新宿主路由的 0.4.0 后硬刷新，旧路由 `POST /api/ability-strip` 返回 200，新增的 `GET /api/ability-strip/events` 仍 404，宿主进程启动时间早于安装时间。**这是判别"宿主是否已加载新代码"最直接的方法：探测只有新代码才有的路由/行为。**
 - 用方式 A 时，移动插件目录（改变 tgz 绝对路径）后必须从新路径重新 `add`；用方式 B 则不受目录位置影响。
 
 ---
@@ -374,6 +382,10 @@ dsh-plugins/                       ← 插件单仓库（git）
 
 两种方式都**彻底消灭路径问题**——profile 记录的是本机自己的路径（或 git 定位信息），从来没有跨机器共享过路径。**每台机器可以各选一种，互不影响。**
 
+> 两种方式用的都是 `dsh plugin --profile web add`，**不是** DSH 官方的 `plugin_manager install_bundle`。官方入口传的是包**目录**（= 链接源码），适合本地热迭代；这里选 tarball / git 源是为了发布隔离与跨机器一致。取舍与官方原文见 [§15.2](#152-官方安装入口我们没在用)。
+>
+> **升级已装插件时注意**：替换已安装包的**宿主 JS** 必须重启 Host 才生效（官方明文，见 [§15.1](#151-重载与重启官方明文决定改完要不要重启)）；只改客户端 bundle 则硬刷新即可。
+
 ### 11.1 为什么不能把 tgz / profile 复制到别的机器
 
 profile 的 `package.json` 里，依赖值要么形如 `file:<本机绝对路径>.tgz`，要么形如 `git+<url>#<sha>&path:/<目录>`。前者与机器绑定，且之后的 `dsh plugin install` 依赖那个 tgz **在原地存在**。
@@ -549,7 +561,7 @@ $prof = Join-Path $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:U
 | `dsh-ability-strip` | 浏览器 `Ctrl+F5`，输入框下方出现 `skill N \| MCP N`，点击行展开明细 |
 | `dsh-subagent-wait-reminder` | 派发一个子智能体，派发结果后应紧跟一条 user 角色 `<system-reminder>`；纯 Host 侧，不需要刷新浏览器 |
 
-Host 不需要重启（`dsh-hmr` 监视 profile 清单并重组层）；有浏览器半边的插件必须硬刷新。
+**重启规则**：只改浏览器半边 → Host 不用重启，硬刷新即可；**改了宿主半边代码 → 必须重启 Host 进程**（ESM 缓存，`dsh-hmr` 只重组层不重新求值模块，见 §4 的实测证据）。有浏览器半边的插件无论如何都要硬刷新。
 
 ### 11.6 回滚
 
@@ -630,8 +642,104 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 
 ## 14. 各插件的具体命令
 
-本文件只写跨插件规约。每个插件的打包 / 安装 / 验证 / 回滚命令写在该插件 README 的「安装」节，避免两处维护：
+本文件只写跨插件规约。每个插件的打包 / 安装 / 验证 / 回滚命令写在该插件 `README.md` 的「安装」节，避免两处维护：
 
 - [dsh-ability-strip/README.md](dsh-ability-strip/README.md)（双半边，有浏览器半边）
 - [dsh-subagent-wait-reminder/README.md](dsh-subagent-wait-reminder/README.md)（纯 Host 侧）
 - [dsh-read-img/README.md](dsh-read-img/README.md)（纯 Host 侧，单工具）
+
+---
+
+## 15. 官方口径与偏离记录
+
+**权威出处**：DSH **随包安装**的插件开发 skill — `cordis-plugin-development`，位于
+`<dsh 安装目录>/node_modules/@deepseek-ai/dsh-agent-preset/skills/cordis-plugin-development/`
+（`SKILL.md` + `references/host-plugin.md`、`practices.md`、`verification.md`、`ui-plugin.md`、`mcp-bundle.md`）。
+
+这是**唯一的一手权威**。本仓库的规约是在它之上叠加"发布隔离"的取舍，凡冲突处以下面记录为准。**升级 dsh 后请重读这几份文件**（路径随版本可能变化，用 `Get-ChildItem <dsh>\node_modules\@deepseek-ai\dsh-agent-preset\skills` 定位）。
+
+### 15.1 重载与重启（官方明文，决定"改完要不要重启"）
+
+`references/host-plugin.md` 末尾原文：
+
+> Inspect saved-state and activation outcomes separately: `failed` requires diagnosis, `overridden` means a higher-priority layer wins, and `restart-required` means the change is not live. **Installing a new bundle can activate through HMR; replacing an installed package requires restart to load a fresh JavaScript module generation.** Do not infer updated browser code from an unchanged slot id.
+
+落到操作上：
+
+| 改了什么 | 是否需要重启 Host |
+| --- | --- |
+| 新增一个 bundle（此前从未装过） | ❌ 可通过 HMR 激活 |
+| 客户端 bundle（`lib/client.js`） | ❌ Host 不用重启，浏览器硬刷新即可 |
+| 配置 / patch 层 / 条目增删禁用 | ❌ `dsh-hmr` 重组层 |
+| **替换已安装包的宿主 JS（`lib/index.js`）** | ✅ **必须重启**（"fresh JavaScript module generation"） |
+
+**为什么它不热**（代码层，便于自查）：`cordis-plugin-loader` 用裸路径 `import()`（相对路径 `import(new URL(name, baseUrl).href)`、包名 `import(resolve(name))`），**无任何 cache-busting**；`internal/update` 的 "reload" 只是拿已缓存的模块命名空间重新 `apply`；`dsh-app-boot` 虽通过原生插件访问 Node 内部 ESM loader，但只用于**解析路由**（拦截 `resolveSync`）与特性探测（`getOrCreateModuleJob` 仅出现在 `modern` 判断里），**从不失效 module job**。
+
+**本机实测（2026-11-09）**：替换 `dsh-ability-strip` 0.3.0 → 0.4.0 后硬刷新，客户端已是 0.4.0（新警示标出现），但新增的 `GET /api/ability-strip/events` 仍 404、旧的 `POST /api/ability-strip` 正常 200 → 宿主仍是旧模块代际。
+
+> **判别法**：不要靠日志或进程列表猜，**探测只有新代码才有的路由/行为**。官方 API（`plugin_manager`）会直接给出 `restart-required`，见 15.2。
+
+### 15.2 官方安装入口（我们没在用）
+
+`references/host-plugin.md`：
+
+> `plugin_manager` `install_bundle` performs package installation and bundle selection; do not reproduce those steps with shell commands.
+
+`SKILL.md`：
+
+> use `plugin_manager` with `action: install_bundle` and **the absolute package directory** as `target` …
+> Do not write the profile's `package.json` or `cordis.patch.yml`, create packages under `$DSH_HOME`, or run pnpm in the profile directory: `install_bundle` performs those steps
+
+要点：
+- 官方入口是 **`plugin_manager install_bundle`，传包目录**，返回 `application` / `warnings` / `restart-required`，**用它判断是否生效**。
+- 目录安装 = **链接**（`host-plugin.md`：「Local directory installation links the checkout instead… `files` does not filter a linked directory」）。也就是说官方本地开发循环就是链接源码、改完即生效。
+- `set_plugin` / `set_bundle` 开关；`remove_bundle` 移除。`failed` 要诊断、`overridden` 表示被更高优先级层覆盖、`restart-required` 表示未生效。
+
+**我们为什么仍用 `dsh plugin --profile web add <tarball>`**：本仓库要求发布与源码物理隔离（§0），而官方目录安装是链接。用 tarball 能同时满足隔离与可回滚。代价：拿不到官方的 `restart-required` 信号，只能靠 15.1 的判别法自查。**如果你只是做本地快速迭代**，用官方 `install_bundle`（链接）更顺手——但要接受"改源码即改线上"。
+
+### 15.3 客户端不得 require Harness Client 包（我们违反了这条）
+
+`references/practices.md`：
+
+> **Do not `require('@deepseek-ai/dsh-client-ui-primitives')`** or load any other Harness Client package as a module; `dsh.client.inject` entries only order activation and stay allowed. They change without notice, a plain-JS plugin has no type check, and **a throwing component blanks your slot entry** (console: `slot entry crashed in '<slot>'`). Write your own controls and match the host instead: copy markup, CSS, and behavior from the primitive into the plugin … Rename copied classes under your plugin's prefix, keep only `--dsw-alias-*` token references …
+
+**现状（如实）**：`dsh-ability-strip/lib/client.js` **require 了** `@deepseek-ai/dsh-client-ui-primitives`（用 `ui.Button`/`ui.Tag`/`ui.Modal`/`ui.Icon`），**与官方这条明确冲突**。它能运行（真机验证过），但风险是官方点名的：0.2.2 就把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包合并进了 shell，模块表恰好还暴露这些名字才没炸。
+
+**这是本仓库当前最需要偿还的技术债**，处理方向：改成插件自带控件 + 只用 `--dsw-alias-*` theme token。记录在 `dsh-ability-strip/HANDOFF.md`。
+
+> 注意区分：`dsh.client.inject`（在 `package.json` 里声明模块）**仍是允许的**，它只影响激活顺序；被禁的是运行时 `require(...)` 那个包。
+
+### 15.4 不要轮询，等事件（支持把定时器换成事件推送）
+
+`references/practices.md`：
+
+> **The framework drives; the plugin computes.** Session projections, Conversation assembly, and slot rendering subscribe, cache, and publish for you. A plugin that subscribes, rescans, or writes DOM itself bypasses that incremental machinery.
+>
+> Wait on durable events such as `turn/end`, `assistant/message`, or `tool/result`… **Do not poll `agent/status`.**
+
+结论：官方整体取向是"等事件、别轮询"，所以 `dsh-ability-strip` 0.4.0 把 15 秒定时器换成变更推送，**方向与官方一致**。
+
+但要如实说明一处限定：官方理想路径是**框架转发事件**（`ctx.remote.$on`），而 `@deepseek-ai/dsh-api-remotes` 的转发白名单 `API_REMOTE_FORWARDED_EVENTS` 是**核心包内的封闭静态数组（30 条）**，**不含 `tools/change`**，也没有对外追加 API；同一进程里唯一的事件源槽位 `typertGateway.registerRemoteEvents` 已被该包占用（重复注册直接抛错）。所以自建 SSE 通道是**对框架缺口的补偿**，不是官方推荐形态——它用到了 15.6 的能力，但要知道这属于"官方没覆盖的空白"。
+
+### 15.5 本仓库与官方的偏离总表
+
+| 主题 | 官方做法 | 本仓库做法 | 为什么偏离 | 代价 |
+| --- | --- | --- | --- | --- |
+| 安装形态 | 目录安装（= 链接源码） | tarball 拷贝 / git 源 | 发布与源码物理隔离、可回滚 | 放弃"改完即生效"的官方开发循环 |
+| 安装入口 | `plugin_manager install_bundle` | `dsh plugin --profile web add` | 同上（官方入口是链接） | 拿不到官方 `restart-required` 信号 |
+| 客户端依赖 | 禁止 `require` Harness Client 包 | **仍 require `ui-primitives`** | 历史实现，未重构 | 升级断裂风险（官方点名） |
+| 刷新机制 | 等框架转发的事件 | 自建 SSE 通道 | `tools/change` 不在转发白名单 | 多用一条 HTTP 连接；属官方空白区 |
+
+### 15.6 官方推荐的排查顺序（照它做，省时间）
+
+`SKILL.md`「Knowledge sources, in order」：
+
+1. **Inspection**：`cordis_inspect_query`（`Service` / `Event` / `Config` / `Tool` / `Slots` / `Theme`）；
+2. **Package documentation**：`Config.listConfigs` 拿 `packageDir` → 读该包 `README.md`；
+3. **Source**：安装包只有 `lib/index.js` + `lib/types/**/*.d.ts`（带 JSDoc），源码 checkout 才有 `src/`。**从具体的安装或运行失败出发**做源码级诊断，不要一上来就考古。
+
+另外 `SKILL.md` 还有两条与本仓库直接相关：
+
+> Changes affect every session in that profile and survive restart.
+
+> Every `plugin_manager` action … also needs approval without Full access, so call it only when its result decides the next step.

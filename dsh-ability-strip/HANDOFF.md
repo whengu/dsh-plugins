@@ -1,7 +1,7 @@
 # HANDOFF：dsh-ability-strip 交接文档
 
 > 交接目标：读完本文 + [README.md](README.md)，接手者应当能在**不问任何历史问题**的前提下维护、升级、回滚本插件。
-> 本文写于 2026-11-03，快照基线：dsh `0.2.1-rc.5`、pnpm `12.9.1`、Windows、profile `web`。
+> 本文写于 2026-11-03，2026-11-09 更新（0.4.0：定时轮询 → 变更推送）；快照基线：dsh `0.2.2-rc.1`、pnpm `12.9.1`、Windows、profile `web`。
 > **来源声明（如实）**：本插件的评审发生在开发会话内（两轮 × 2 名独立评审），原始评审文档**未落盘存档**，只存在于已被压缩的会话记录中。本文的评审结论是**重建**：依据为 git 历史、README/INSTALL 文本、会话存档摘要。与其余插件的原始评审档案（如 dsh-subagent-wait-reminder 的 REVIEW-*.md）相比，本文精度受限，接手者应以代码与检查脚本为准。
 
 ## 1. 这是什么，为什么存在
@@ -16,12 +16,14 @@
 
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile，版本 0.3.0；2026-10-28 以 tarball 首装，2026-11-03 随单仓库迁移从新路径重新登记（相同字节） |
-| 装载 | 已进 `dsh.profile.bundles`，页面实测有效 |
-| 页面验证 | 收起/展开/明细/故障弹窗全过（2026-10-28） |
-| 静态评审 | 两轮 × 2 评审，全部发现已修复（结论重建于本文 §5） |
+| 安装 | `web` profile：**0.4.0 已打包并装入**（2026-11-09，`dsh plugin add ./dist/dsh-ability-strip-0.4.0.tgz`，0.3.0→0.4.0）；0.3.0 的 tgz 仍在 `dist/` 未覆盖，可回滚 |
+| 源码 | 0.4.0（定时轮询 → 变更推送），`pnpm check` 三项全 PASS；`verify-pack` PASS |
+| **宿主半边生效状态** | ⚠️ **未生效**：装入后硬刷新，客户端已是 0.4.0（琥珀"变更推送已断开"标出现，证明错误路径正常），但新增的 `GET /api/ability-strip/events` 仍 **404**，旧的 `POST /api/ability-strip` 正常 200 → **宿主进程仍在跑 0.3.0 模块，需重启 Host 才激活推送**（ESM 缓存，`dsh-hmr` 不重新求值宿主模块） |
+| 装载 | 已进 `dsh.profile.bundles`；`LinkType` 为空；安装副本 `lib/client.js`/`lib/index.js` 哈希与源码逐字节一致；`why` = 0.4.0；`dump-config` 无 skipping |
+| 页面验证 | 0.3.0：收起/展开/明细/故障弹窗全过（2026-10-28）。0.4.0：客户端侧已验（渲染 `skill 22 / MCP 28`、`pushLost` 警示标按设计出现）；**推送主路径未验**（等宿主重启） |
+| 静态评审 | 两轮 × 2 评审 + 本轮 subagent 实现与主 agent 独立复核（发现并修复 2 处：`EventSource` 无 error 处理、宿主 `send()` catch 泄漏） |
 | 版本管理 | 原独立仓库 GitHub `whengu/dsh-ability-strip`（`7e228a0..4b6551c`）；2026-11-03 解散 `.git` 并入单仓库，2026-11-04 复用该仓库作远程（旧提交保留在合并历史中）并更名为 `whengu/dsh-plugins` |
-| 待办 | 无阻塞事项 |
+| 待办 | **重启 Host 后**按 §6 验证变化流（重点：Network 里出现 `eventsource`、静置无周期请求、断/连 MCP 即时反映） |
 
 ## 3. 资产地图（哈希为 SHA256 前 16 位，迁移时点快照）
 
@@ -31,11 +33,11 @@
 
 | 文件 | 哈希 | 说明 |
 |---|---|---|
-| `lib\index.js` | `296F6FBCF1121208` | 宿主半边：读 `ctx.tools.schemas()`，服务 `/api/ability-strip` |
-| `lib\client.js` | `2AF536B46CF5AF29` | 浏览器半边：能力条本体，lazy-CJS `__ModuleLoader__` 形态，约 1200 行 |
+| `lib\index.js` | `E3E8BDD6FBB46C92` | 宿主半边：读 `ctx.tools.schemas()`，服务 `/api/ability-strip`（读）与 `/api/ability-strip/events`（变更推送） |
+| `lib\client.js` | `8E532A4D8C8E355D` | 浏览器半边：能力条本体，lazy-CJS `__ModuleLoader__` 形态，约 1350 行 |
 | `cordis.patch.yml` | `6053C78AEE545759` | bundle patch（`- insert: [{id: ability-strip, name}]`） |
-| `package.json` | `D87CB9FEF30A3BC7` | `dsh.bundle.patch` + `dsh.client.platform: "web"` + `engines.dsh >=0.2.0-rc.2` |
-| `README.md` | `2626120D206B3606` | 中文完整文档（含 AI 编写声明） |
+| `package.json` | `C1436709097B796B` | `dsh.bundle.patch` + `dsh.client.platform: "web"` + `engines.dsh >=0.2.0-rc.2`，版本 0.4.0 |
+| `README.md` | `4BEE357FD0D3B2F5` | 中文完整文档（含 AI 编写声明） |
 | `scripts\check-*.mjs` ×3 | — | host 契约 / bundle 契约 / 渲染检查（`pnpm check` 三连） |
 | `scripts\verify-pack.mjs` | — | tarball 与源码树逐条比对 |
 | `dist\dsh-ability-strip-0.3.0.tgz` | — | **发布产物，39936 B，9 个条目，不得覆盖不得删除**（profile lockfile 记录其 sha512；2026-11-04 全量复核时纠正了此前误记的 40212 B） |
@@ -57,14 +59,16 @@
 
 ## 4. 工作机制速览（细节见 README）
 
-1. **双半分工**：浏览器半边每 15 秒（页面可见时）经 `connection.rpc.call("/api", "ability-strip", ...)` 读宿主半边；宿主半边读工具注册表并按 `mcp__<server>__<tool>` 约定分组计数，自带缓存（`tools/change` 失效，失败不缓存）。
-2. **三道轮询护栏**：宿主缓存（答案没变不调 `schemas()`）、`samePayload` 抑制（数据没变不重渲染）、in-flight 闩（慢 Host 不叠请求）。三者各有一条变异测试钉死。
-3. **故障状态机**：已配置且启用但零工具注册 → 连接故障弹窗（按服务器名去重，只弹一次）；无配置/全禁用 → 未连接不弹；注册表读不动 → 读取失败不弹。
+1. **双半分工**：浏览器半边经 `connection.rpc.call("/api", "ability-strip", ...)` 读宿主半边，宿主半边读工具注册表并按 `mcp__<server>__<tool>` 约定分组计数，自带缓存（`tools/change` 失效，失败不缓存）。
+2. **推送而不是轮询**：宿主半边在同一条 `/api` 载体上多开一条精确路由 `/api/ability-strip/events`（`GET`，`text/event-stream`）。`tools/change` 一响就写一帧 `data: {"version":N}`；浏览器半边用原生 `EventSource` 接收，收到帧就静默重读一次。**页面上没有任何定时器**：刷新只由"推送帧到达 / 打开明细 / 标签页重新可见 / 手动刷新 / 会话切换"触发。开流时宿主先写一帧当前版本，用来补上"浏览器刚读过、流才建好"这段缝隙以及断线重连后的缺口。
+3. **推送断开必须可见**：`EventSource` 报错时（`error`）能力条进入"推送断开"状态——收起态行尾一个 11 px 琥珀警示标（健康时不渲染，所以正常宽度不变）、明细面板里一句话说明数字不再自动更新。同一次故障**只补读一次**（`compensated` 闸），`open` / 收到帧时复位，所以重试不会变成读取风暴；彻底不再重试的情况靠"切回标签页"重开这条流，仍然没有定时器。
+4. **三道护栏**（都不是轮询专用的，保留了）：宿主缓存（答案没变不调 `schemas()`；同一条 `tools/change` 订阅既失效缓存又推送）、`samePayload` 抑制（数据没变不重渲染）、in-flight 闩 + 单标记补读（慢 Host 不叠请求，一波帧折叠成一次补偿读取）。三者各有一条变异测试钉死。
+5. **故障状态机**：已配置且启用但零工具注册 → 连接故障弹窗（按服务器名去重，只弹一次）；无配置/全禁用 → 未连接不弹；注册表读不动 → 读取失败不弹。
 
 ## 5. 接手必读的教训（**重建自会话存档**，原始评审未存档）
 
 1. **`anchorRef` 必须真的绑到 DOM**（高危）：面板定位依赖锚点，ref 未绑时 `place()` 早退、面板永久不可见——静态读代码发现不了绑定缺失，页面一动就知道。
-2. **in-flight 跳过必须补偿**（中危）：读取进行中的轮询直接返回时，必须递增 `requestId` 并标记补读，否则旧会话数据会写进新会话。
+2. **in-flight 跳过必须补偿**（中危，0.4.0 后风险更高）：读取进行中的再次请求直接返回时，必须递增 `requestId` 并标记补读，否则旧会话数据会写进新会话。改成推送后这条更容易踩到——一波 `tools/change` 会连着来，正是靠"单标记补读"把 N 帧折叠成一次补偿读取，删掉它就会一帧一读。
 3. **`fiberPhase` 判定要排除 `null`/`unloading`**（中危）：把非稳态当已定，会在 MCP 启动期（pending/loading）误报连接故障弹窗。稳态 = `active || failed`。
 4. **RPC 通道必须是 `"/api"`**（中危）：`rpc.call` 对通道做 `.slice(1)` 剥前导斜杠——写 `"api"` 会发成 `pi/...` 404。
 5. **`mcp__` 拆分是启发式不是约定回析**（中危）：DSH 从不解析公共工具名，`mcp__<server>__<tool>` 只能按最后一个 `__` 启发式拆分；文档不得声称「与 harness 同规则」。
@@ -79,7 +83,31 @@
 pnpm check    # check-host + check-bundle-contract + check-render，必须全部 RESULT: PASS
 ```
 
-渲染检查覆盖全部显示状态（首绘/已载/收起/展开/各类失败/弹窗触发与三道轮询护栏的变异测试），不需要浏览器。
+渲染检查覆盖全部显示状态（首绘/已载/收起/展开/各类失败/弹窗触发）与推送机制（无定时器、开流地址、隐藏标签页不读、同答案不渲染、一波帧折叠、卸载关流），不需要浏览器。
+
+### 0.4.0 装机后要验什么（本轮未真机验证）
+
+```powershell
+pnpm check                                                            # 先全绿
+pnpm pack --pack-destination dist
+node scripts/verify-pack.mjs dist\dsh-ability-strip-0.4.0.tgz
+dsh plugin --profile web add ./dist/dsh-ability-strip-0.4.0.tgz       # 站在插件目录里
+# 浏览器 Ctrl+F5
+```
+
+页面打开后逐条确认（控制台按 F12）：
+
+1. 输入框下方能力条出现 `skill | N | MCP | N`，明细展开/收起正常——UI 契约不该有任何变化。
+2. DevTools 的 Network 里有一条挂住的 `events` 请求，`type` 是 `eventsource`、`Content-Type: text/event-stream`；**静置十几分钟不会出现新的周期请求**（这就是"没有轮询"的直接证据）。
+3. 断开/恢复一个 MCP 服务器（或改它的地址），能力条在事件发生的那一刻就变（旧版本最迟 15 秒），不需要点刷新。
+4. 切到别的标签页再回来：数字立刻重读一次；故障弹窗在最需要的时候出现。
+5. **故意把流打断**：DevTools → Network → 找到那条 `events` 请求 → 右键 `Block request URL`（或停掉宿主再起）。
+   - 期望：收尾出现琥珀警示标，明细面板明写"变更推送已断开：下面这些数字不会再自动更新"；
+   - 解封/恢复后刷新页面（或切走再切回标签页）：标记消失、流重新连上；
+   - **不应**出现周期性的重读请求，也不应出现读取风暴（一次故障只补读一次）。
+6. 关掉这个标签页，宿主侧那条流应随之结束（浏览器关连接 → 宿主 abort → 流关闭），不会积压。
+
+回滚：装回 0.3.0 的 tarball 即可（同一套命令）。
 
 ### 升级发版
 
@@ -103,16 +131,38 @@ dsh plugin --profile web add ./dist/dsh-ability-strip-<新版本>.tgz
 
 1. 槽位 `conversation.composer.dock` 仍存在且在输入行**之后**渲染（挪到 `conversation.input.dock` 会跑到输入框上方）；
 2. `connection.rpc.call("/api", ...)` 信封（`client-request`/`server-response`）与 `connection.fetch.register` 精确路由契约不变；
-3. `ctx.tools.schemas()` 深拷贝语义与 `tools/change` 事件仍存在；
-4. `mcp__<server>__<tool>` 命名约定不变（拆分逻辑依赖它）；
-5. 基线模块表仍含 `react`、`react-dom`、`@deepseek-ai/dsh-client-ui-primitives`（`check-bundle-contract` 会抓住漂移）；
-6. `ui.Button`/`ui.Tag` 契约（size/tone 取值）不变。
+3. **`connection.fetch.register` 的精确路由仍然返回 handler 自己的 `Response` 且 `bridge` 逐块写出 `response.body`**——变更流依赖这一点（它是一条常开的流式响应，不是一次性 JSON）。同时确认 `/api` 前缀路由仍由 `bridge` 承载（只看 `dsh-client-connection` 的 `createSharedFetchHandler` 与 `apply` 两处）；
+4. **宿主 webServer 的 gzip 过滤器仍豁免 `content-type: text/event-stream`**（否则帧会被压缩缓冲成一坨，页面表现为"流连上了但永远不更新"）；
+5. `ctx.tools.schemas()` 深拷贝语义与 `tools/change` 事件仍存在（后者同时是缓存失效与推送的信号源）；
+6. `mcp__<server>__<tool>` 命名约定不变（拆分逻辑依赖它）；
+7. 基线模块表仍含 `react`、`react-dom`、`@deepseek-ai/dsh-client-ui-primitives`（`check-bundle-contract` 会抓住漂移）；浏览器侧还依赖全局 `EventSource`（标准 API，无需声明）；
+8. `ui.Button`/`ui.Tag` 契约（size/tone 取值）不变。
 
 ## 7. 已知限制（README 有完整论述）
 
-- 轮询不是推送：掉线服务器最迟一个周期（15 秒）才显示；实时推送需要 Typert Remote Event 声明，对本插件的体量不成比例。
+- 推送只覆盖工具注册表：MCP 那半是实时的；`skills/list`、`pluginInventory/list`、`pluginManager/listBundles` 三块没有对应的变更信号（可用的近似事件见 README），只在打开明细 / 切回标签页 / 手动刷新时重读——所以收起态的 skill 计数可能是几分钟前的。
+- 推送断开时的行为：能力条显示"推送断开"（收起态一个 11 px 警示标 + 面板里一句话），并补读一次，然后**不会自动恢复**——`EventSource` 自己会重连，彻底不再重试的情况要等切回标签页或点刷新。断开期间数字会冻结，但读者能看见它冻结了，这是有意取舍：加定时重试等于把这次删掉的轮询请回来。
+- 推送通道占一条浏览器连接：每个页面一条常开的 SSE（HTTP/1.1 同源上限 6 条）。空闲不发数据，但槽位是占着的；DSH 自己的 client-hmr 用同样的做法。
 - 连上但零工具 = 未连接：`dsh-mcp-client` 连接对象私有，两种情况从注册表不可区分；工具不可用即未连接，是有意读法。
 - 无连接细节：失败原因在 Host 日志，页面拿不到——弹窗明说这一点。
+
+## 7.5 技术债（官方点名，尚未偿还）
+
+### 债 1：客户端 require 了 `@deepseek-ai/dsh-client-ui-primitives`（官方明文禁止）
+
+DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.md` 写着：
+
+> **Do not `require('@deepseek-ai/dsh-client-ui-primitives')`** or load any other Harness Client package as a module… They change without notice, a plain-JS plugin has no type check, and **a throwing component blanks your slot entry** (console: `slot entry crashed in '<slot>'`). Write your own controls and match the host instead: copy markup, CSS, and behavior from the primitive into the plugin … keep only `--dsw-alias-*` token references …
+
+**现状**：`lib/client.js` 目前 require 它，用 `ui.Button` / `ui.Tag` / `ui.Modal` / `ui.IconWarningOutlineRegular`。真机验证能跑，但风险是官方点名的：0.2.2 已经把 `ui-primitives`/`dockkit`/`slots`/`store` 四个包**合并进 shell**，只因模块表恰好仍暴露这些名字才没炸。
+
+**偿还方向**（按官方指引）：自带控件 + 只用 `--dsw-alias-*` 主题 token；从 primitives 抄 markup/CSS/行为（含 Modal 的焦点与 Escape、`role`/`aria` 语义），类名加本插件前缀。注意 `package.json` 里的 `dsh.client.inject` 声明**仍允许**（只影响激活顺序），被禁的是运行时 `require(...)`。
+
+**为什么值得优先做**：它比推送机制更影响长期可维护性——一次 dsh 升级就可能让 slot 变空白，而这是用户直接可见的故障。
+
+### 债 2：安装入口不是官方 `plugin_manager install_bundle`
+
+官方入口传包**目录**（= 链接源码）并返回 `application` / `restart-required`。本仓库用 `dsh plugin --profile web add <tarball>`（为了发布隔离），代价是拿不到官方的 `restart-required` 信号，只能靠"探测只有新代码才有的路由"自查。详见仓库根 `INSTALL.md` §15.2。
 
 ## 8. 历史与决策记录
 
@@ -128,12 +178,17 @@ dsh plugin --profile web add ./dist/dsh-ability-strip-<新版本>.tgz
 | 2026-11-03 | **单仓库迁移** | 解散独立 `.git`，移入 `dsh-plugins\`；profile 从新路径重新登记（相同字节，哈希复核一致） |
 | 2026-11-04 | 远程复用与更名 | 单仓库推送回原 GitHub 仓库 `whengu/dsh-ability-strip`（不新建仓库），旧两个提交以 `-s ours` 合并保留；随后仓库更名为 `whengu/dsh-plugins` |
 | 2026-11-09 | **dsh 升级兼容复核（0.2.1-rc.5 → 0.2.2-rc.1）** | **兼容，无需改代码**。真机证据：`[data-composer-dock]` 显示 `skill 22 / MCP 28`；点击展开明细 6979 字符、三节齐全、**0 处读取失败**。契约核对：`rpc.call(channel, endpoint, payload, signal)` 与 `` `${channel}/${endpoint}`.slice(1) `` 拼接未变；`client-request`/`server-response` 信封未变；精确 Fetch 路由 `{path, methods}` 未变；基线模块名仍在 shell 模块表。**变化提醒**：`dsh-client-ui-primitives`/`-dockkit`/`-slots`/`-store` 已不再是独立 npm 包（并入 shell bundle），模块解析不受影响，但不要写进 `dependencies` 指望从磁盘解析 |
+| 2026-11-09 | **0.4.0：定时轮询 → 变更推送** | 起因是用户反馈"它是在页面上定时的，这样做不优雅"。**为什么不能走 DSH 的转发事件**：`typertGateway.registerRemoteEvents()` 是单例（`dsh-api-gateway\lib\index.js` 里已有注册就抛 `already registered`），运行时那个位置归 `dsh-api-remotes`——全站 `ctx.remote.$on` 的唯一数据源；其事件白名单是包内封闭静态数组（30 条，无 `tools/change`），没有对外追加 API；浏览器侧 `$on` 对事件名不做运行时校验，订阅一个不在白名单里的事件不报错、只是永远不触发（静默失效）。**怎么做的**：本包自己的精确 Fetch 路由返回流式 `Response`（`createSharedFetchHandler` 把 handler 的 Response 原样返回，`/api` 前缀由 `bridge` 逐块写 `response.body`），按 DSH 自己的 client-hmr 先例用 SSE；浏览器侧用原生 `EventSource`（不引依赖，仍是零运行时依赖）。**取舍**：代价是每页一条常开连接，收益是页面上再无定时器、MCP 变化延迟从"最迟 15 秒"变成"事件发生那一刻"；被否决的方案见 README「两半如何通话」与「已知限制」。**验证**：`pnpm check` 三项 PASS + 变异矩阵逐条确认会失败（含"重新加回 15 秒 setInterval 必须被抓到"）。**未真机验证**（本轮禁止部署），装机后的验证步骤见 §6 |
+| 2026-11-09 | **0.4.0 复审修复（推送断开 + 拆流泄漏）** | 复审指出两处真缺陷，都已修。**(1) 变更流断开后能力条静默停更**：`EventSource` 遇到致命状态（非 200、content-type 不对）**永不重试**，而原实现只挂了 `message`，于是没有任何读取、数字冻结却看不出「停更」——把静默失败从 MCP 转移到了自己的传输层。修法：`error` 上补读一次（`compensated` 闸保证一次故障只补一次，`open`/`message` 复位）、状态可见（收起态 11 px 警示标，健康时不渲染所以宽度不变；面板里一句话）、切回标签页重开被彻底关闭的流（仍无定时器）。**(2) `send()` 的 `catch` 破坏清理路径**：原来 `catch` 只置 `closed`，而 `shutdown` 以 `closed` 早退，导致 `detach()` 与 `streams.delete` 都不执行——安全网失败反而制造泄漏。修法：把 `closed`/拆除两义合一为单个 `cleaned` 闸，`catch` 直接调 `shutdown()`；并给 reader 加只读 `subscribers`，用真实流逐条测三条结束路径（abort / cancel / unload）都清空订阅者与 unload 集合。**覆盖诚实度**：(1) 的每个分支都有能抓到回归的变异（去 `error` 监听、去一次性闸、不重置闸、去重开、无条件重开）；(2) 的 `catch` 分支**没有任何可触发路径**，变异后检查仍全绿——它是正确的安全网而非被证明的行为，未强行造测试入口 |
+| 2026-11-09 | **0.4.0 装机 + 发现宿主不热重载** | 打包（`verify-pack` PASS）→ `dsh plugin add ./dist/…-0.4.0.tgz` → 硬刷新。**客户端 0.4.0 生效**：渲染 `skill 22 / MCP 28`，并因推送未通而正确显示琥珀警示标（**这是修复 (1) 的真机验证**）。**宿主半边未生效**：`GET /api/ability-strip/events` 返回 404，而 `POST /api/ability-strip` 正常 200 且带真实数据。定位：Loader 用普通 `import()`，同一 specifier 命中 Node ESM 缓存；`dsh-hmr` 只监视 patch/清单并重组层，**不重新求值宿主模块**。结论：**宿主半边改动必须重启 Host**（我此前在 INSTALL.md/README 写的"Host 不需要重启"是错的，已全仓纠正，并给出"探测只有新代码才有的路由"这个判别法） |
+| 2026-11-09 | **查官方口径（结论：方向对，另有三处偏离）** | 用户质疑"DSH 大多数东西都热重载，是不是走错方向"。找到随包安装的官方 skill `dsh-agent-preset/skills/cordis-plugin-development/`，其 `references/host-plugin.md` 明文：**"Installing a new bundle can activate through HMR; replacing an installed package requires restart to load a fresh JavaScript module generation."** → 重启要求是官方规则，非我方判断失误。`references/practices.md` 亦明文 **"Do not poll"** / "Wait on durable events"，故"轮询→事件推送"方向与官方一致。同时发现三处偏离：**(1) 客户端 require `ui-primitives` 被官方明文禁止（技术债，见 §7.5）**；(2) 安装入口应为 `plugin_manager install_bundle`（我们用的是 `dsh plugin add`，拿不到 `restart-required`）；(3) 官方本地开发用目录安装（= 链接），本仓库为发布隔离而禁用。已全部写入仓库根 `INSTALL.md` §15 |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 
-- [ ] `pnpm check` 三项全 PASS；`lib\client.js` 哈希 = `2AF536B46CF5AF29`。
+- [ ] `pnpm check` 三项全 PASS；`lib\client.js` 哈希 = `8E532A4D8C8E355D`、`lib\index.js` 哈希 = `E3E8BDD6FBB46C92`。
 - [ ] `dsh plugin --profile web why dsh-ability-strip` 有记录；安装副本 `LinkType` 为空。
 - [ ] 页面输入框下方出现 `skill | N | MCP | N`；点击行展开明细、再点收起。
+- [ ] Network 里有一条常开的 `eventsource`/`text/event-stream` 请求，静置时没有任何周期请求。
 - [ ] 能复述 §5 至少三条教训的根因（anchorRef、in-flight 补偿、`/api` 通道）。
 - [ ] 知道升级、回滚、卸载各用哪条命令（§6）。
 - [ ] 知道 dsh 升级后要复查哪些耦合点（§6 末尾六条）。
