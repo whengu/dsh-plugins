@@ -459,6 +459,17 @@ let text = textOf(tree);
 // name, so that is what is pinned — plus the flat ban on word labels below.
 check(findByLabel(tree, "技能") !== undefined, "the skill mark must carry an accessible name");
 check(findByLabel(tree, "MCP") !== undefined, "the MCP mark must carry an accessible name");
+// A pending read must not claim anything about the session: `scope` read off a
+// missing payload is undefined, which is not "agent" — that made the tooltip say
+// "no active agent" before the first answer arrived.
+check(
+	(markTitle(tree, "工具") ?? "").includes("读取中"),
+	`a pending read must say 读取中, saw ${JSON.stringify(markTitle(tree, "工具"))}`,
+);
+check(
+	!(markTitle(tree, "工具") ?? "").includes("暂无活跃 agent"),
+	"a pending read must not claim the session has no agent",
+);
 check(findByLabel(tree, "工具") !== undefined, "the tools mark must carry an accessible name");
 check(text.includes("…"), "first paint must show a pending placeholder");
 check(!text.includes("未连接"), "first paint must NOT claim MCP is disconnected before reading");
@@ -1099,6 +1110,74 @@ const chipGlyph = (tree) => {
 		nested.length === 0,
 		`a role=button row must not contain a native button, saw ${nested.length}`,
 	);
+}
+
+
+// --- A global answer must never masquerade as this session's tools --------
+// The host reads `tools.schemas(agent)`, and an agent exists only while its session
+// is live in the Host process. After a restart the fallback is the deployment
+// catalog; printing that count where the session's count belongs is precisely the
+// misreport the reader hit, so the collapsed chip must show no number at all.
+{
+	mount(disconnectedProps);
+	await settle();
+	const globalTree = render(disconnectedProps);
+	const toolsChip = findByLabel(globalTree, "工具");
+	const chipText = textOf(toolsChip ?? []);
+	check(
+		!/\d/.test(chipText.join("")),
+		`a global answer must not print a count, saw ${JSON.stringify(chipText)}`,
+	);
+	check(
+		(markTitle(globalTree, "工具") ?? "").includes("暂无活跃 agent"),
+		"the chip must say WHY it has no number, not just omit it",
+	);
+	const openGlobal = findButton(globalTree, "明细");
+	if (openGlobal) openGlobal.props.onClick();
+	await flush();
+	const globalText = textOf(render(disconnectedProps));
+	check(has(globalText, "没有活跃 agent"), "the panel must explain the missing agent");
+	check(has(globalText, "部署级注册表"), "the panel must label the fallback for what it is");
+	check(
+		!has(globalText, "本会话 agent 视图"),
+		"the panel must not claim a session view it does not have",
+	);
+}
+
+
+// --- Every chip state answers only for what it knows ----------------------
+// "pending", "unreadable" and "no active agent" are different facts. Folding any of
+// them into another is how the strip claimed a session had no agent before it had
+// asked, or printed a deployment number where a session number belonged.
+const chipState = (props) => ({
+	title: markTitle(render(props), "工具") ?? "",
+	digits: textOf(findByLabel(render(props), "工具") ?? []).join(""),
+});
+{
+	// pending: nothing has been read yet.
+	// A fresh mount, not `render(okProps)`: the harness keeps the last payload on the
+	// mounted instance, so re-rendering would show the previous case's answer.
+	const pendingTree = mount(okProps);
+	const pending = { title: markTitle(pendingTree, "工具") ?? "", digits: textOf(findByLabel(pendingTree, "工具") ?? []).join("") };
+	check(pending.title.includes("读取中"), `pending must say 读取中, saw ${JSON.stringify(pending.title)}`);
+
+	// unreadable: an answer arrived but carries no tools block at all.
+	const noToolsProps = { sessionId: "s-notools", load: async () => ({ skills: payloadOk.skills }) };
+	mount(noToolsProps);
+	await settle();
+	const unreadable = chipState(noToolsProps);
+	check(
+		unreadable.title.includes("读取失败"),
+		`a payload without a tools block must read as a failure, saw ${JSON.stringify(unreadable.title)}`,
+	);
+	check(!/\d/.test(unreadable.digits), "an unreadable tools block must not print a count");
+
+	// ready: the session's own count, stated in the tooltip.
+	mount(okProps);
+	await settle();
+	const ready = chipState(okProps);
+	check(ready.digits === "5", `a ready chip must print the total, saw ${JSON.stringify(ready.digits)}`);
+	check(ready.title.includes("本会话 agent"), "a ready chip must say whose number it is");
 }
 
 console.log("---");

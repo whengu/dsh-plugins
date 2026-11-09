@@ -1233,29 +1233,60 @@ window.__ModuleLoader__.load({
 				);
 			};
 
-			// The third mark: how many tools the model is actually offered. The browser
-			// cannot see the registry, so this number arrives with the same payload as
-			// the MCP half — and it is the total, not the MCP subset, so the gap between
-			// the two marks is the non-MCP tool count without printing it.
+			// The third mark: how many tools this session's model is offered.
+			//
+			// `scope` is the whole point here. The host reads `tools.schemas(agent)`, and
+			// an agent exists only while its session is live in this Host process — the
+			// session controller resumes one on demand. After a restart, or for any
+			// session that has not run since, there is no agent, the host falls back to
+			// the deployment catalog, and that number is NOT this session's tool view.
+			// Printing it here is what made the strip look like it ignored the session,
+			// so a global answer renders as "unreadable", never as a count.
 			const renderToolsChip = () => {
 				const tools = payload?.tools;
-				let body;
-				if (payload === void 0) body = h("span", MUTED, "…");
-				else if (tools?.error !== void 0)
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-error-primary)" },
-					});
-				else body = h("span", COUNT, String(tools?.totalTools ?? 0));
+				/**
+				 * What this chip actually knows, as four distinct states.
+				 *
+				 * Collapsing them is how a wrong claim gets made: `scope` read off a missing
+				 * payload is `undefined`, which is not `"agent"`, so a naive check reports
+				 * "no active agent" before anything was asked — and a payload without a
+				 * tools block would report one too. Each state answers for itself.
+				 */
+				const state =
+					payload === void 0
+						? "pending"
+						: tools === void 0 || tools.error !== void 0
+							? "unreadable"
+							: tools.scope !== "agent"
+								? "no-agent"
+								: "ready";
+				const stateBody = {
+					pending: () => h("span", MUTED, "…"),
+					unreadable: () =>
+						h(ui.IconUnknownOutlineRegular, {
+							size: 12,
+							style: { color: "var(--dsw-alias-state-error-primary)" },
+						}),
+					// No live agent for this session: a mark, never the deployment's number.
+					// The panel still shows that catalog, labelled for what it is.
+					"no-agent": () =>
+						h(ui.IconUnknownOutlineRegular, {
+							size: 12,
+							style: { color: "var(--dsw-alias-state-warn-primary)" },
+						}),
+					ready: () => h("span", COUNT, String(tools?.totalTools ?? 0)),
+				}[state];
+				const stateTitle = {
+					pending: "工具清单读取中",
+					unreadable: "工具清单读取失败",
+					"no-agent": "该会话暂无活跃 agent，读不到它自己的工具视图（在会话里发一条消息后即可读取）",
+					ready: `本会话 agent 被提供的工具总数（含 MCP）：${tools?.totalTools ?? 0}`,
+				}[state];
 				return h(
 					"span",
-					{
-						style: CHIP,
-						title: tools?.error !== void 0 ? "工具清单读取失败" : "模型被提供的工具总数（含 MCP）",
-						"aria-label": "工具",
-					},
+					{ style: CHIP, title: stateTitle, "aria-label": "工具" },
 					h(ui.IconToolOutlineRegular, { size: 12 }),
-					body,
+					stateBody(),
 				);
 			};
 
@@ -1278,6 +1309,14 @@ window.__ModuleLoader__.load({
 				const meta = failed
 					? []
 					: [
+							// The one case that must never read as "your session's tools": a global
+							// answer is the deployment catalog, because this session has no agent to
+							// answer for it. Say why, and say what makes it available.
+							...(tools !== void 0 && tools.scope !== "agent"
+								? [
+										"该会话当前没有活跃 agent（重启后尚未在本进程运行过，或它已被释放），因此读不到它自己的工具视图。下面是部署级注册表，不是本会话的数字；在会话里发一条消息后点刷新即可读到。",
+									]
+								: []),
 							// Make the arithmetic visible, so "40 shown, eleven listed" cannot be
 							// read as a bug: the total is split across two sections.
 							`共 ${total} 个：下列 ${local.length} 个非 MCP` +
@@ -1330,7 +1369,7 @@ window.__ModuleLoader__.load({
 							? "读取失败"
 							: tools?.scope === "agent"
 								? "注册表 · 本会话 agent 视图"
-								: "注册表 · 全局视图（未取到本会话 agent）",
+								: "无活跃 agent · 部署注册表",
 					}),
 					meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
 					body,

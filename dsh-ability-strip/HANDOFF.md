@@ -15,8 +15,8 @@
 ## 2. 当前状态快照
 | 项 | 状态 |
 |---|---|
-| 安装 | `web` profile：**0.8.1**（0.3.0 → … → 0.7.0 → 0.8.0 → 0.8.1，均以 `dsh plugin add <tarball>` 装入） |
-| 源码 | 0.8.1：0.4.0 变更推送 + 0.5.0 本地 UI kit（不加载 Harness Client 包）+ 0.6.0 的 tools 标记（按本会话 agent 读工具面）+ 0.7.0 图标化收起态与工具描述 + 0.8.0 澄清"注册表 vs 请求层过滤" |
+| 安装 | `web` profile：**0.9.1**（0.3.0 → … → 0.7.0 → 0.8.0 → 0.8.1 → 0.9.0 → 0.9.1，均以 `dsh plugin add <tarball>` 装入） |
+| 源码 | 0.9.1：0.4.0 变更推送 + 0.5.0 本地 UI kit（不加载 Harness Client 包）+ 0.6.0 的 tools 标记（按本会话 agent 读工具面）+ 0.7.0 图标化收起态与工具描述 + 0.8.0 澄清"注册表 vs 请求层过滤" + 0.9.x 无活跃 agent 时不再冒充会话视图 |
 | 宿主半边生效状态 | **0.4.0 与 0.5.0 均已真机确认生效**（0.4.0 重启后 `GET /api/ability-strip/events` = 200 + `text/event-stream`；0.5.0 宿主未改故无需重启）。**0.6.0 新增的 `local` / `scope` 字段需重启 Host 才生效** |
 | 装载 | 已进 `dsh.profile.bundles`；`LinkType` 为空；安装副本与源码内容一致（按换行归一比对）；`why` 有记录 |
 | 页面验证 | 0.3.0：收起/展开/明细/故障弹窗全过（2026-10-28）。0.4.0：推送主路径已验（首帧 `{"version":0}`、20 秒空闲零请求、断线警示标真实出现）。0.5.0：自绘 svg 与面板视觉已验。**0.6.0：客户端可验（tools 计数来自旧宿主也能显示）；非 MCP 清单与 scope 标注需重启后验** |
@@ -199,6 +199,7 @@ DSH 随包的官方 skill `cordis-plugin-development` 的 `references/practices.
 | 2026-11-09 | **0.7.0 紧凑化 + 工具描述** | 用户三点要求：①工具描述能否顺手显示；②状态栏空间不足，移除 `skill`/`MCP`/`tools` 文本只留图标；③MCP 无连接时不要文字，只给图标，"无"/详情挪到展开面板。实施：宿主汇总改为返回 `{name, description}` 对象（描述取自模型看到的那份 schema，按 400 字符截断并加 `…`，`MAX_DESCRIPTION_CHARS` 可测）；客户端三个 chip 去掉标签，各用图标区分 + `aria-label` + `title`；MCP 状态由"文字"改为"图标"（连上=绿色数字、未连接=琥珀 ✕、故障/读取失败=红色警示），文字移进 tooltip 与面板 MCP 标题右侧；面板里 MCP 工具与非 MCP 工具都用同一 `ToolRow`（名字 + 最多两行描述，完整文本在 tooltip）。**顺带纠正一处我写反的事实**：全局视图并非"更大"——它不含 agent scope 里注册的工具，本机实测同一时刻全局 40 / agent 72，方向是少。变异验证：把 `skill` 标签加回 → 1 条断言红；描述不进渲染文本 → 2 条断言红（MCP 与非 MCP 各一）。 |
 | 2026-11-09 | **0.8.0 澄清「注册表 vs 请求层过滤」** | 用户重启后发现工具列表里仍有 `read_image`，问是显示插件还是读图插件的问题。查证：**两者都没坏**。`dsh-read-img` 的 `lib/hide-tools.js` 在 `llm/stream` 里 `filterTools(options.tools, hidden)`，过滤的是**发给模型的请求**，另加 pre-execute guard 拒绝残余调用；它不注销别人注册的工具（也不该）。能力条读的是 `ctx.tools.schemas(agent)` = **注册表**，所以 `read_image` 必然还在。真正的问题在我的措辞：面板写"本会话 agent 可见"，而它只是"注册表里对该 agent 可见"。修法：标题改为"注册表 · 本会话 agent 视图 / 全局视图"，并在工具分区标题下加一行明说"插件可在请求层再过滤，这类过滤看不到"（用 read_image 作例子）。**不做**"请求层最终工具列表"视图：那要观察 `llm/stream` 下游的 `options.tools`，只有发过请求后才有值，且受监听器注册顺序影响，会引入 staleness。 |
 | 2026-11-09 | **0.8.1 严格 review 后的修复（9 项）** | 用户指出"代码质量有问题，需要严格 review"。按 code-review skill 纪律只做静态走读（不运行被测代码、不以测试为正确性证据），发现并修复：**MEDIUM-1 缓存无上界**（`cached` 按 sessionId 累积、只在 `tools/change` 清空，agent 销毁不清理 → 加 `MAX_CACHED_SCOPES = 8` 按插入序淘汰）；**MEDIUM-2 数字用减法推导**（`total - local` 被当作"MCP 个数"展示，而空/非字符串名会被两个桶同时跳过 → 改为从 `connectedServers` 真实计数，并显式报"N 个名字不可解析"）；**MEDIUM-3 无障碍**（`role="button"` + `tabIndex` 但无 `onKeyDown`，键盘打不开面板 → 抽出 `toggle()` 并处理 Enter/Space，Space 阻止默认滚动）；**MEDIUM-4 嵌套交互元素**（故障 chip 是原生 `<button>`，嵌在 `role="button"` 行内 → 改为无 role 的 span，可达路径交给行与对话框）；**MEDIUM-5 两种故障同图**（读失败与 MCP 故障都用红色 warning 三角 → 新增 `unknown` 问号图标给"读不到"）；LOW：模块头/信封示例/`readClientRequest` @returns 三处文档漂移、`MAX_DESCRIPTION_CHARS` 语义（400 + 省略号）、`tools` 块缺失与"为空"混同；另把 `toolsSection` 的嵌套三元拍平为"先算再渲染"。每条修复都补了断言并做变异验证（去掉缓存上界、标题改用总数、键盘不响应、改回原生 button、unknown 复用 warning 路径 —— 五次全部变红且还原到字节一致）。 |
+| 2026-11-09 | **0.9.x 不再拿全局注册表冒充本会话** | 用户重启后反馈"根本不能反映当前会话的工具情况"。根因：宿主按 `agents.get(sessionId)` 读，而 agent 是**按需创建**的（控制器 L310 才 resume），重启后大多数会话没有活跃 agent → 静默退回全局注册表并把数字摆在"本会话工具数"的位置上。修法：收起态改为四态状态机（读取中 / 读不到 / 无活跃 agent / 就绪），**无 agent 时不显示任何数字**，面板明说"这是部署级注册表，不是本会话的数字"并给出办法（发一条消息后刷新）。**否决**自动 `agents.resume()`：只读插件不应创建 agent。过程中我自己引入并当场抓到一处错：`globalOnly = tools?.scope !== "agent"` 在 payload 未到时误报"无 agent"；另有一次把"读取卡死"误判为我误操作（`aria-expanded=true` 时又点击＝关闭）。真机验证：活跃会话显示 72 并标注"本会话 agent 被提供的工具总数"。 |
 
 ## 9. 接手验收清单（接手者照此自证接手完成）
 
