@@ -7,8 +7,17 @@
 // tree instead. It is how the section/chip hoisting in 0.12.0 was shown to be a pure
 // refactor rather than a rewrite.
 //
-// The reference is a git revision (default: the last commit), not a stored snapshot:
-// a checked-in copy would drift and start asserting against itself.
+// `pnpm check` passes 764108d (0.10.4) as the reference: a FIXED baseline, not HEAD.
+// Comparing against HEAD degenerates into a self-comparison once everything is
+// committed, which proves nothing about the feature branch. 764108d is the commit
+// before the large refactor series; the collapsed strip's three marks are a stable
+// contract, so a change there is a regression until deliberately re-baselined.
+// Update the pin in package.json ONLY when an intentional collapsed-state change
+// has been reviewed — that act is itself the decision the check protects.
+//
+// The expanded panel is NOT compared against this old baseline: later versions
+// legitimately add controls (the search box), so a diff there is a feature, not a
+// regression. It is instead checked for being non-empty and stable.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
