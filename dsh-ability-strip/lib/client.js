@@ -564,30 +564,6 @@ function computePlacement(rect, viewport) {
 			return true;
 		}
 
-/**
- * Whether two `paramDetails` lists describe the same parameters.
- *
- * Field-by-field rather than `JSON.stringify`: that would make key order
- * load-bearing, and the host is free to omit optional fields.
- * @param previous - the list already on screen.
- * @param next - the list just read.
- * @returns true when nothing the expanded row shows has changed.
- */
-function sameParamDetails(previous, next) {
-	const before = Array.isArray(previous) ? previous : [];
-	const after = Array.isArray(next) ? next : [];
-	if (before.length !== after.length) return false;
-	for (let index = 0; index < before.length; index += 1) {
-		const left = before[index] ?? {};
-		const right = after[index] ?? {};
-		if (left.name !== right.name) return false;
-		if (left.type !== right.type) return false;
-		if ((left.required === true) !== (right.required === true)) return false;
-		if ((left.description ?? "") !== (right.description ?? "")) return false;
-	}
-	return true;
-}
-
 		function samePayload(previous, next) {
 			if (previous === void 0 || next === void 0) return previous === next;
 			// Errors are compared by message: a different failure is news.
@@ -638,7 +614,6 @@ function sameParamDetails(previous, next) {
 				if (!sameStringList(prevLocal[index]?.paramNames, nextLocal[index]?.paramNames)) return false;
 				// The expanded row's parameter table is rendered from these, so a change
 				// there is visible news even when the schema preview is byte-identical.
-				if (!sameParamDetails(prevLocal[index]?.paramDetails, nextLocal[index]?.paramDetails)) return false;
 			}
 			// MCP is the field that changes in practice: compare the server list, each
 			// server's tool count, and each tool by value (two fetches never share
@@ -660,7 +635,6 @@ function sameParamDetails(previous, next) {
 					if (prevTools[t]?.schema !== nextTools[t]?.schema) return false;
 					if (prevTools[t]?.schemaTruncated !== nextTools[t]?.schemaTruncated) return false;
 					if (!sameStringList(prevTools[t]?.paramNames, nextTools[t]?.paramNames)) return false;
-					if (!sameParamDetails(prevTools[t]?.paramDetails, nextTools[t]?.paramDetails)) return false;
 				}
 			}
 			// Loader rows: enablement and phase are what the panel prints.
@@ -977,9 +951,6 @@ function sameParamDetails(previous, next) {
 				schemaTruncated: tool?.schemaTruncated === true,
 				paramNames,
 				// The host's per-parameter summary, passed through with one guard: a
-				// non-array becomes an empty list so the row simply omits the table.
-				// Absent entirely from a host that predates it.
-				paramDetails: Array.isArray(tool?.paramDetails) ? tool.paramDetails : [],
 				// Built once, here, because this is the only place a tool enters the tree:
 				// the search box then costs one substring test per tool per keystroke.
 				//
@@ -1055,9 +1026,6 @@ function sameParamDetails(previous, next) {
 			const [showSchema, setShowSchema] = React.useState(false);
 			const size = tool.schemaChars ?? 0;
 		// Per-parameter rows from the host, derived there from the FULL schema. They stay
-		// correct when the preview below is truncated; a host that predates them sends
-		// nothing and this list is simply empty.
-		const paramDetails = Array.isArray(tool.paramDetails) ? tool.paramDetails : [];
 			// Three cases, all reachable: a measurable size, the host's explicit "could
 			// not serialize it" (-1), and no declared parameters at all. The gate below
 			// must therefore be `size !== 0`, not `size > 0` — otherwise the unknown case
@@ -1151,69 +1119,6 @@ function sameParamDetails(previous, next) {
 								},
 								showSchema ? "▾ 收起参数" : "▸ 展开参数",
 							),
-							// Readable rows before the raw JSON: this is the shape at a glance, and it
-							// survives the truncation that makes the JSON below unparseable.
-							showSchema && paramDetails.length > 0
-								? h(
-										"div",
-										{
-											style: {
-												display: "flex",
-												flexDirection: "column",
-												gap: 2,
-												width: "100%",
-												margin: "3px 0 0",
-												padding: "4px 6px",
-												fontSize: 10.5,
-												lineHeight: 1.45,
-												background: "color-mix(in srgb, currentColor 6%, transparent)",
-												borderRadius: 6,
-											},
-										},
-										paramDetails.map((param, position) =>
-											h(
-												"div",
-												{
-													key: `${position}:${param.name}`,
-													style: { display: "flex", alignItems: "baseline", gap: 5, minWidth: 0 },
-												},
-												h("span", { style: { fontWeight: 600, flexShrink: 0 } }, param.name),
-												h(
-													"span",
-													{
-														style: { opacity: 0.6, flexShrink: 0, fontFamily: "ui-monospace, monospace" },
-													},
-													param.type ?? "unknown",
-												),
-												// A glyph, not a word: a column of ✓/· reads faster than a column of
-												// Chinese text competing with the parameter names.
-												h(
-													"span",
-													{
-														title: param.required === true ? "必填" : "可选",
-														style: { flexShrink: 0, opacity: param.required === true ? 0.85 : 0.35 },
-													},
-													param.required === true ? "✓" : "·",
-												),
-												param.description === void 0
-													? null
-													: h(
-															"span",
-															{
-																style: {
-																	opacity: 0.62,
-																	overflow: "hidden",
-																	textOverflow: "ellipsis",
-																	whiteSpace: "nowrap",
-																	minWidth: 0,
-																},
-															},
-															param.description,
-														),
-											),
-										),
-									)
-								: null,
 							showSchema
 								? h(
 										"pre",
