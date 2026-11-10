@@ -214,6 +214,13 @@ if (!source.includes("value.scope !== \"agent\" && value.scope !== \"global\""))
 // rename that orphans the call site is exactly the regression this catches.
 for (const [label, needle] of [
 	["a bounded read", "setTimeout(() => controller.abort(), READ_TIMEOUT_MS)"],
+	// The ceiling is only real if EVERY read ends at it: the two Remotes that take no
+	// signal are raced against the same handle instead.
+	["a raced skills read", "abortable(skills.list({ sessionId }, signal), signal)"],
+	["a raced inventory read", "abortable(inventory.list(), signal)"],
+	["a raced bundles read", "abortable(manager.listBundles(), signal)"],
+	["a raced host read", "abortable(connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {"],
+	["the ceiling named as a timeout", 'const READ_ABORTED = "读取超时，已取消";'],
 	["a cancellable read", "connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {"],
 	["the abort signal reaching rpc.call", "}, signal)"],
 	["the latest dropped trigger", "pendingOptions.current = options"],
@@ -222,6 +229,62 @@ for (const [label, needle] of [
 ]) {
 		if (!source.includes(needle)) problems.push(`client must keep ${label}: ${needle}`);
 }
+// --- The ceiling must actually END a read, not merely exist -----------------
+// Behavioural, not a string tripwire: the Remotes below NEVER settle, which is the
+// one case a source check cannot tell apart from a working one. If `loadAll` does
+// not settle, the in-flight guard never clears and the strip stays dead until the
+// dock remounts — so this drives the real `load` face and fails on a hang.
+{
+	const never = () => new Promise(() => {});
+	const hung = [];
+	const hangCtx = {
+		remote: {
+			skills: { list: never },
+			pluginInventory: { list: never },
+			pluginManager: { listBundles: never },
+		},
+		connection: { rpc: { call: never } },
+		slots: {
+			inject(_name, register) {
+				register();
+				return () => {};
+			},
+			register(options) {
+				hung.push({ options });
+				return () => {};
+			},
+		},
+	};
+	exportsObj.apply(hangCtx);
+	const face = hung[0]?.options?.inject?.("session-under-test");
+	if (typeof face?.load !== "function") {
+		problems.push("the dock registration must expose a load face for the ceiling test");
+	} else {
+		const controller = new AbortController();
+		const pending = face.load("session-under-test", controller.signal);
+		controller.abort();
+		const outcome = await Promise.race([
+			pending.then((payload) => ({ payload }), (error) => ({ error })),
+			new Promise((resolve) => setTimeout(() => resolve({ hung: true }), 1000)),
+		]);
+		const abortedMessage = "读取超时，已取消";
+		console.log("cancelled read:", outcome.hung === true ? "did not settle" : "settled");
+		if (outcome.hung === true) {
+			problems.push("a read whose Remotes never settle must still end at the ceiling");
+		} else if (outcome.payload === void 0) {
+			problems.push(`a cancelled read must settle as a payload, saw ${String(outcome.error)}`);
+		} else {
+			for (const block of ["skills", "inventory", "bundles", "tools"]) {
+				if (outcome.payload[block]?.error !== abortedMessage) {
+					problems.push(
+						`a cancelled ${block} read must report ${JSON.stringify(abortedMessage)}, saw ${JSON.stringify(outcome.payload[block]?.error)}`,
+					);
+				}
+			}
+		}
+	}
+}
+
 if (typeof dispose === "function") dispose();
 
 console.log("---");

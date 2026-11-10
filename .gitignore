@@ -4,3 +4,5 @@ profile-backups/
 *.tgz
 *.broken
 pnpm-lock.yaml
+# Mutation-verification scratch copies (a mutated file kept beside the real one).
+.mut/

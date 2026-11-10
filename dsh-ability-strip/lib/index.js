@@ -60,9 +60,13 @@ export const name = "ability-strip";
 export const inject = ["connection", "tools"];
 
 /**
- * How many viewing scopes keep a cached answer, and how many remember their last
- * agent answer. Both are bounded so a long-lived Host serving many sessions cannot
- * accumulate catalogs without limit.
+ * How many viewing scopes keep a cached CURRENT answer.
+ *
+ * Deliberately its own bound, not `Config.maxRememberedSessions`: the cache is
+ * dropped whenever the registry moves, so a deeper cache costs only the catalogs
+ * themselves, while the per-session memory outlives its agent and is the map an
+ * operator may want to keep small. Both are bounded, so a long-lived Host serving
+ * many sessions cannot accumulate catalogs without limit.
  */
 export const MAX_CACHED_SCOPES = 8;
 
@@ -261,10 +265,6 @@ export function collectParamNames(node, prefix = "", out = [], depth = 0, budget
 	return out;
 }
 
-/** Most parameter rows one tool may contribute to the wire. */
-/** Longest per-parameter description kept, in characters. */
-
-
 /**
  * Group the registry's tool names into per-server MCP counts.
  *
@@ -435,9 +435,18 @@ export function createToolSummaryReader(ctx, limits = DEFAULT_LIMITS) {
 		cached.clear();
 	};
 	const off = ctx.on("tools/change", invalidate);
-	/** Bound a map by dropping the oldest inserted key. */
-	const bound = (map) => {
-		while (map.size > (limits.maxRememberedSessions ?? MAX_CACHED_SCOPES)) {
+	/**
+	 * Bound a map by dropping the oldest inserted key.
+	 *
+	 * The limit is an argument rather than a field read: the two maps have different
+	 * bounds on purpose (see `MAX_CACHED_SCOPES`), and a helper that reached for one
+	 * of them would silently impose it on the other — which is exactly the defect
+	 * this signature exists to make impossible.
+	 * @param map - the map to shrink.
+	 * @param limit - how many entries it may keep.
+	 */
+	const bound = (map, limit) => {
+		while (map.size > limit) {
 			const oldest = map.keys().next();
 			if (oldest.done === true) break;
 			map.delete(oldest.value);
@@ -479,7 +488,7 @@ export function createToolSummaryReader(ctx, limits = DEFAULT_LIMITS) {
 			if (result.scope === "agent") {
 				remembered.delete(key);
 				remembered.set(key, { summary: result, at: result.readAt });
-				bound(remembered);
+				bound(remembered, limits.maxRememberedSessions ?? MAX_CACHED_SCOPES);
 			} else {
 				// No live agent this time. A remembered answer is this session's own
 				// numbers from when it did have one, so it beats the deployment catalog —
@@ -493,12 +502,16 @@ export function createToolSummaryReader(ctx, limits = DEFAULT_LIMITS) {
 			// Cache only successful current answers. A transient failure must not stick,
 			// and a stale answer must not be cached (a fresh read should win next time).
 			cached.set(key, result);
-			bound(cached);
+			bound(cached, MAX_CACHED_SCOPES);
 			return result;
 		},
 		/** How many sessions currently remember a last-known answer (introspection). */
 		get remembered() {
 			return remembered.size;
+		},
+		/** How many viewing scopes hold a current answer (introspection). */
+		get scopes() {
+			return cached.size;
 		},
 		dispose() {
 			off();

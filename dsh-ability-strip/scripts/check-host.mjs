@@ -725,6 +725,20 @@ if (typeof fakeCtx.effectDisposer === "function") {
 		memReader.remembered === 2,
 		`maxRememberedSessions must bound the map to 2, saw ${memReader.remembered}`,
 	);
+	// The two maps carry DIFFERENT bounds on purpose: `maxRememberedSessions` caps the
+	// memory an operator may want small, while the current-answer cache is bounded by
+	// MAX_CACHED_SCOPES. Sharing one knob silently shrank the cache to 1, which turned
+	// every session switch into a full registry read.
+	const splitReader = createToolSummaryReader(ctxFor(true), { ...DEFAULT_LIMITS, maxRememberedSessions: 1 });
+	for (let index = 0; index < MAX_CACHED_SCOPES + 4; index += 1) splitReader.read(`cached-${index}`);
+	check(
+		splitReader.remembered === 1,
+		`maxRememberedSessions:1 must leave exactly one remembered session, saw ${splitReader.remembered}`,
+	);
+	check(
+		splitReader.scopes === MAX_CACHED_SCOPES,
+		`the current-answer cache must keep MAX_CACHED_SCOPES (${MAX_CACHED_SCOPES}) scopes whatever maxRememberedSessions says, saw ${splitReader.scopes}`,
+	);
 	// A released agent must be served from memory, which proves the entries are real.
 	const released = createToolSummaryReader(ctxFor(false), { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
 	const releasedAnswer = released.read('session-0');

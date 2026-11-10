@@ -404,8 +404,11 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * Carrier channel both halves use: the shared `/api` route the client
-		 * `Connection` mounts. The leading slash is load-bearing — see
-		 * same slice is applied here deliberately, not for symmetry. See `readTools`.
+		 * `Connection` mounts. The leading slash is load-bearing, not decorative:
+		 * `rpc.call` refuses a channel that fails `^/[A-Za-z0-9._~-]+$` and composes
+		 * the URL as `${channel}/${endpoint}` before slicing off the leading
+		 * character, so `"api"` is rejected outright instead of silently posting to
+		 * `pi/ability-strip`.
 		 */
 		const API_CHANNEL = "/api";
 
@@ -667,60 +670,123 @@ function computePlacement(rect, viewport) {
 		}
 
 		/**
+		 * What a cancelled read reports.
+		 *
+		 * The only thing that cancels a read is the read ceiling (`READ_TIMEOUT_MS`), so
+		 * naming the ceiling is the honest wording: a bare "已取消" reads like the reader
+		 * pressed something.
+		 */
+		const READ_ABORTED = "读取超时，已取消";
+
+		/**
+		 * Settle `work` when the read is cancelled, even if `work` cannot be cancelled.
+		 *
+		 * `rpc.call` and `skills.list` take an AbortSignal; `pluginInventory.list` and
+		 * `pluginManager.listBundles` do not. Without this race, a Host that never answers
+		 * one of those leaves `loadAll` pending forever — and because the refresh path is
+		 * guarded by the same in-flight flag, the strip then stays dead until the dock
+		 * remounts. A ceiling only means something if every read ends at it.
+		 * @param work - the read to settle.
+		 * @param signal - the read's cancel handle, or undefined when there is none.
+		 * @returns `work`, or a rejection once the signal aborts.
+		 */
+		function abortable(work, signal) {
+			if (signal === void 0) return work;
+			if (signal.aborted) return Promise.reject(new Error(READ_ABORTED));
+			return new Promise((resolve, reject) => {
+				const onAbort = () => reject(new Error(READ_ABORTED));
+				signal.addEventListener("abort", onAbort, { once: true });
+				// Both branches are handled on purpose: a read that settles after the race
+				// was lost must not become an unhandled rejection.
+				work.then(
+					(value) => {
+						signal.removeEventListener("abort", onAbort);
+						resolve(value);
+					},
+					(error) => {
+						signal.removeEventListener("abort", onAbort);
+						reject(error);
+					},
+				);
+			});
+		}
+
+		/**
+		 * Name one failed read.
+		 * @param error - whatever the read threw.
+		 * @param signal - the read's cancel handle.
+		 * @returns the message this block prints.
+		 */
+		function describeRead(error, signal) {
+			if (signal?.aborted === true) return READ_ABORTED;
+			return describeError(error);
+		}
+
+		/**
 		 * Read one session-addressed skill catalog.
 		 * @param remote - the client remote service.
 		 * @param sessionId - session whose composition selects the catalog view.
+		 * @param signal - the read's cancel handle.
 		 * @returns the catalog, or a diagnostic instead of a throw.
 		 */
-		async function readSkills(remote, sessionId) {
+		async function readSkills(remote, sessionId, signal) {
 			const skills = remote?.skills;
 			if (skills === void 0) return { error: "skills Remote 未挂载" };
 			try {
-				const result = await skills.list({ sessionId });
+				const result = await abortable(skills.list({ sessionId }, signal), signal);
+				// The signal wins over the answer: a read cancelled while its response was
+				// in flight describes a moment the reader has already left.
+				if (signal?.aborted === true) return { error: READ_ABORTED };
 				if (!result.ok) {
 					return { error: `${result.error.code}: ${result.error.message}` };
 				}
 				return { entries: result.value.skills };
 			} catch (error) {
-				return { error: describeError(error) };
+				return { error: describeRead(error, signal) };
 			}
 		}
 
 		/**
 		 * Read the Loader inventory (every non-group entry plus preset rows).
 		 * @param remote - the client remote service.
+		 * @param signal - the read's cancel handle.
 		 * @returns the snapshot, or a diagnostic instead of a throw.
 		 */
-		async function readInventory(remote) {
+		async function readInventory(remote, signal) {
 			const inventory = remote?.pluginInventory;
 			if (inventory === void 0) return { error: "pluginInventory Remote 未挂载" };
 			try {
-				const result = await inventory.list();
+				// This Remote takes no signal, so the race is the only thing that ends it.
+				const result = await abortable(inventory.list(), signal);
+				if (signal?.aborted === true) return { error: READ_ABORTED };
 				if (!result.ok) {
 					return { error: `${result.error.code}: ${result.error.message}` };
 				}
 				return { snapshot: result.value };
 			} catch (error) {
-				return { error: describeError(error) };
+				return { error: describeRead(error, signal) };
 			}
 		}
 
 		/**
 		 * Read the profile's bundles and the patch rows each one declares.
 		 * @param remote - the client remote service.
+		 * @param signal - the read's cancel handle.
 		 * @returns the bundle list, or a diagnostic instead of a throw.
 		 */
-		async function readBundles(remote) {
+		async function readBundles(remote, signal) {
 			const manager = remote?.pluginManager;
 			if (manager === void 0) return { error: "pluginManager Remote 未挂载" };
 			try {
-				const result = await manager.listBundles();
+				// This Remote takes no signal either: the race is what ends it.
+				const result = await abortable(manager.listBundles(), signal);
+				if (signal?.aborted === true) return { error: READ_ABORTED };
 				if (!result.ok) {
 					return { error: `${result.error.code}: ${result.error.message}` };
 				}
 				return { bundles: result.value };
 			} catch (error) {
-				return { error: describeError(error) };
+				return { error: describeRead(error, signal) };
 			}
 		}
 
@@ -772,9 +838,11 @@ function computePlacement(rect, viewport) {
 				// `rpc.call` composes `${channel}/${endpoint}` and slices the leading
 				// slash, so `API_CHANNEL` must keep it: "api" alone becomes "pi/..."
 				// and misses the route entirely.
-				const response = await connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {
+				// `rpc.call` honours `signal` itself; the race is belt and braces, so the
+				// ceiling holds even for a carrier that ignores the signal.
+				const response = await abortable(connection.rpc.call(API_CHANNEL, TOOL_ENDPOINT, {
 					sessionId,
-				}, signal);
+				}, signal), signal);
 				if (!response.ok) {
 					return { error: `${response.error?.code ?? "unknown"}: ${response.error?.message ?? "连接失败"}` };
 				}
@@ -819,25 +887,26 @@ function computePlacement(rect, viewport) {
 					recordedAt: typeof value.recordedAt === "string" ? value.recordedAt : void 0,
 				};
 			} catch (error) {
-				if (signal?.aborted === true) return { error: "读取已取消" };
-				return { error: describeError(error) };
+				return { error: describeRead(error, signal) };
 			}
 		}
 
 		/**
 		 * Load the strip's whole payload. Blocks fail independently so one missing
-		 * Remote never blanks the other group.
+		 * Remote never blanks the other group, and every block SETTLES: the two Remotes
+		 * that take no signal are raced against this one (see `abortable`), so a Host
+		 * that never answers cannot hold the whole read open.
 		 * @param remote - the client remote service.
 		 * @param sessionId - session to read the skill catalog for.
 		 * @param connection - the client Connection service (host tool route).
-		 * @param signal - optional abort, forwarded to the host route read.
+		 * @param signal - optional abort, honoured by every read.
 		 * @returns one settled payload for the strip.
 		 */
 		async function loadAll(remote, sessionId, connection, signal) {
 			const [skills, inventory, bundles, tools] = await Promise.all([
-				readSkills(remote, sessionId),
-				readInventory(remote),
-				readBundles(remote),
+				readSkills(remote, sessionId, signal),
+				readInventory(remote, signal),
+				readBundles(remote, signal),
 				readTools(connection, sessionId, signal),
 			]);
 			// Shape-validate the inventory snapshot here, at the load boundary: the
@@ -1813,10 +1882,10 @@ function ToolsChip({ payload, loadFailed }) {
 		function RuntimeStrip(props) {
 			const { sessionId, load } = props;
 			const [open, setOpen] = React.useState(false);
-	// One query for the WHOLE tool surface, not just the non-MCP list. Both the
-	// tools section and the MCP section filter by it, so a search finds a tool
-	// whichever half of the catalogue registered it.
-	const [query, setQuery] = React.useState("");
+			// One query for the WHOLE tool surface, not just the non-MCP list. Both the
+			// tools section and the MCP section filter by it, so a search finds a tool
+			// whichever half of the catalogue registered it.
+			const [query, setQuery] = React.useState("");
 			const [state, setState] = React.useState({ phase: "idle" });
 			// The fault dialog opens itself once per fault, and can be re-opened
 			// from the MCP mark (mouse) and from the detail panel (a real button).
@@ -1831,6 +1900,11 @@ function ToolsChip({ payload, loadFailed }) {
 			// THIS node — pointing it at the anchor is a silent no-op, because a div
 			// without a tab index cannot take focus.
 			const rowRef = React.useRef(null);
+
+			// Stable identity for closing the fault dialog. `Modal` keys its keyboard
+			// listener on `onClose`, so an inline arrow here would remove and re-add a
+			// document-level listener on every render of this strip.
+			const closeAlert = React.useCallback(() => setAlertOpen(false), []);
 
 			// The renderer caches an inject face per registration × scope binding, so
 			// `load` is identity-stable for one Session. A ref keeps the effect keyed
@@ -1857,11 +1931,11 @@ function ToolsChip({ payload, loadFailed }) {
 			// and unmount (a read nobody is waiting for must not keep a Host request
 			// alive). One read at a time, so a single slot is enough.
 			const activeRead = React.useRef(null);
-	// Whether this component is still on screen. The read's `finally` uses it to
-	// decide whether a dropped read is worth compensating: after unmount there is no
-	// reader to show it to, and the compensating request could not be aborted by the
-	// cleanup that already ran.
-	const mounted = React.useRef(true);
+			// Whether this component is still on screen. The read's `finally` uses it to
+			// decide whether a dropped read is worth compensating: after unmount there is no
+			// reader to show it to, and the compensating request could not be aborted by the
+			// cleanup that already ran.
+			const mounted = React.useRef(true);
 
 			const run = React.useCallback(
 				async (options) => {
@@ -1918,13 +1992,16 @@ function ToolsChip({ payload, loadFailed }) {
 						if (id !== requestId.current) return;
 						// A thrown load must be visible: the strip exists to remove blind
 						// spots, so a silent failure would defeat its only purpose. A failed
-						// re-read keeps the last good payload and states the failure. An
-						// aborted read names the abort, because "已取消" from a timeout
-						// reads like a deliberate stop.
+						// re-read keeps the last good payload and states the failure.
+						//
+						// This is the last-resort net, not the timeout path: every block
+						// reports its own cancellation as `READ_ABORTED`, so what lands here
+						// is a throw from outside the four reads — a broken inject face, say.
+						// The abort branch stays for exactly that case.
 						setState((prev) => ({
 							...prev,
 							phase: "failed",
-							error: controller.signal.aborted ? "读取超时，已取消" : describeError(error),
+							error: controller.signal.aborted ? READ_ABORTED : describeError(error),
 						}));
 					} finally {
 						clearTimeout(timer);
@@ -2303,7 +2380,7 @@ function ToolsChip({ payload, loadFailed }) {
 							ui.Modal,
 							{
 								open: alertOpen,
-								onClose: () => setAlertOpen(false),
+								onClose: closeAlert,
 								title: "MCP 连接故障",
 								closeLabel: "关闭",
 								footer: h(
@@ -2311,7 +2388,7 @@ function ToolsChip({ payload, loadFailed }) {
 									{
 										variant: "primary",
 										size: "sm",
-										onClick: () => setAlertOpen(false),
+										onClick: closeAlert,
 									},
 									"知道了",
 								),
@@ -2331,7 +2408,7 @@ function ToolsChip({ payload, loadFailed }) {
 									enabledMcpRows.map((row) =>
 										h(
 											"div",
-																					{
+											{
 												key: row.entryId,
 												style: {
 													display: "flex",
@@ -2378,13 +2455,15 @@ function ToolsChip({ payload, loadFailed }) {
 			// listener on every render (a gap during which a mousedown could slip
 			// through unnoticed).
 			const onCloseRef = React.useRef(onClose);
-	// Same treatment for the search clear: the Escape effect below runs once
-	// (`[]`), so a captured callback identity would freeze the first render's.
-	const clearSearchRef = React.useRef(onClearSearch);
-	clearSearchRef.current = onClearSearch;
+			// Same treatment for the search clear: the Escape effect below runs once
+			// (`[]`), so a captured callback identity would freeze the first render's.
+			const clearSearchRef = React.useRef(onClearSearch);
+			// Both are published in an effect rather than written during render: a ref
+			// write while rendering is a side effect React may replay or discard.
 			React.useEffect(() => {
 				onCloseRef.current = onClose;
-			}, [onClose]);
+				clearSearchRef.current = onClearSearch;
+			}, [onClose, onClearSearch]);
 
 			// Place the panel from the anchor's live rect on open, and keep it placed
 			// while the window resizes. `fixed` keeps it put when the page scrolls.
