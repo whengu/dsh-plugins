@@ -1321,6 +1321,55 @@ const transitionProps = {
 	}
 }
 
+// --- Clearing the search: the button, and Escape --------------------------
+// The panel's Escape handler runs on the CAPTURE phase at `window` and stops the
+// event, so an input-level handler can never see it. These two assertions pin
+// the behaviour that actually exists: a clear button when there is text, and an
+// Escape that clears the box instead of closing the panel.
+{
+	const clearProps = {
+		sessionId: "s-clear",
+		load: async () => ({
+			...payloadOk,
+			tools: {
+				...payloadOk.tools,
+				local: [
+					{ name: "bash", description: "Run a shell", paramNames: ["command"] },
+					{ name: "read", description: "Read a file", paramNames: ["path"] },
+				],
+			},
+		}),
+	};
+	mount(clearProps);
+	await settle();
+	await flush();
+	const clearOpen = findButton(render(clearProps), "明细");
+	clearOpen?.props?.onClick?.();
+	await flush();
+	await settle();
+	const boxBefore = findByLabel(render(clearProps), "搜索工具");
+	check(boxBefore !== undefined, "the panel must offer a search box");
+	check(
+		boxBefore?.props?.["data-ability-strip-search"] !== undefined,
+		"the search box must be marked for the Escape handler",
+	);
+	// No text yet: no clear button.
+	check(findByLabel(render(clearProps), "清除搜索") === undefined, "an empty box must offer no clear button");
+	if (boxBefore !== undefined) {
+		boxBefore.props.onChange({ target: { value: "bash" } });
+		await flush();
+		const clearButton = findByLabel(render(clearProps), "清除搜索");
+		check(clearButton !== undefined, "a filled box must offer a clear button");
+		if (clearButton !== undefined) {
+			// The mousedown guard is what keeps focus in the input.
+			check(typeof clearButton.props.onMouseDown === "function", "the clear button must guard mousedown");
+			clearButton.props.onClick();
+			await flush();
+			check(findByLabel(render(clearProps), "清除搜索") === undefined, "clearing must remove the button again");
+		}
+	}
+}
+
 // --- No markdown leaks into the rendered text ------------------------------
 // Panel copy is a plain JS string, not markdown: `**bold**` would print its
 // asterisks to the reader. A reader hit exactly that, so it is pinned here.
@@ -1611,6 +1660,74 @@ const schemaProps = { sessionId: "s-schema", load: async () => schemaPayload };
 		expandedText.some((t) => typeof t === "string" && t.includes("收起参数")),
 		"the control must flip to a collapse label",
 	);
+}
+
+// --- The expanded row's parameter table ------------------------------------
+// The rows come from the host, derived there from the FULL schema. Two things
+// matter: they render when present, and their absence (an older host) leaves the
+// raw preview exactly as it was instead of rendering an empty shell.
+{
+	const withRows = {
+		...schemaPayload,
+		tools: {
+			...schemaPayload.tools,
+			local: [
+				{
+					name: "bash",
+					description: "Run a shell command",
+					schema: JSON.stringify({ type: "object", properties: { command: { type: "string" } } }),
+					schemaChars: 62,
+					paramDetails: [
+						{ name: "command", type: "string", required: true, description: "The shell command" },
+						{ name: "cwd", type: "string" },
+					],
+				},
+			],
+		},
+	};
+	const withRowsProps = { sessionId: "s-param-rows", load: async () => withRows };
+	mount(withRowsProps);
+	await settle();
+	const rowsOpener = findButton(render(withRowsProps), "明细");
+	if (rowsOpener) rowsOpener.props.onClick();
+	await flush();
+	// Collapsed: the table must not be in the tree yet.
+	const rowsCollapsed = textOf(render(withRowsProps));
+	check(
+		!rowsCollapsed.some((t) => typeof t === "string" && t.includes("必填")),
+		"the parameter table must stay collapsed with the schema",
+	);
+	const rowsExpand = findButton(render(withRowsProps), "▸ 展开参数");
+	check(rowsExpand !== undefined, "a tool with a schema must offer an expand control");
+	if (rowsExpand) rowsExpand.props.onClick();
+	await flush();
+	const rowsText = textOf(render(withRowsProps));
+	const has = (needle) => rowsText.some((t) => typeof t === "string" && t.includes(needle));
+	check(has("command"), "the expanded row must name each parameter");
+	check(has("string"), "the expanded row must show each parameter's type");
+	check(has("✓"), "a required parameter must be marked");
+	check(has("The shell command"), "a parameter description must be shown when the host sent one");
+	check(has("cwd"), "an optional parameter must still be listed");
+	// The raw preview stays available: the rows are a summary, not a replacement.
+	check(has('"command"'), "the raw schema must still be reachable after the table");
+}
+{
+	// An older host sends no `paramDetails`. The row must then look exactly as it
+	// did before: no table, raw preview only. This is the deployment path that
+	// happens whenever the client updates before the Host restarts.
+	const legacyProps = { sessionId: "s-legacy-host", load: async () => schemaPayload };
+	mount(legacyProps);
+	await settle();
+	const legacyOpener = findButton(render(legacyProps), "明细");
+	if (legacyOpener) legacyOpener.props.onClick();
+	await flush();
+	const legacyExpand = findButton(render(legacyProps), "▸ 展开参数");
+	if (legacyExpand) legacyExpand.props.onClick();
+	await flush();
+	const legacyText = textOf(render(legacyProps));
+	const legacyHas = (needle) => legacyText.some((t) => typeof t === "string" && t.includes(needle));
+	check(!legacyHas("必填"), "a host without parameter rows must not render an empty table");
+	check(legacyHas('"command"'), "a host without parameter rows must still show the raw schema");
 }
 
 console.log("---");

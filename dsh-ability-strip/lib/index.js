@@ -199,11 +199,17 @@ function toolEntry(name, schema, limits = DEFAULT_LIMITS) {
 	// browser-side extraction would silently lose the parameter names of exactly the
 	// biggest schemas — the ones a reader most needs to search by.
 	const paramNames = collectParamNames(schema?.parameters);
+	// Same argument, one step further: a compact per-parameter summary is derived
+	// from the FULL schema, so it survives the truncation that makes the raw preview
+	// unparseable. Without it, an oversized schema could only be read as a cut-off
+	// JSON blob — the one case where the reader needs the summary most.
+	const paramDetails = collectParamDetails(schema?.parameters, limits);
 	return {
 		name,
 		description,
 		schemaChars,
 		...(paramNames.length === 0 ? {} : { paramNames }),
+		...(paramDetails.length === 0 ? {} : { paramDetails }),
 		...(schemaText === "" ? {} : { schema: schemaTruncated ? `${schemaText.slice(0, limits.maxSchemaChars)}…` : schemaText }),
 		...(schemaTruncated ? { schemaTruncated: true } : {}),
 	};
@@ -259,6 +265,88 @@ export function collectParamNames(node, prefix = "", out = [], depth = 0, budget
 		}
 	}
 	return out;
+}
+
+/** Most parameter rows one tool may contribute to the wire. */
+export const MAX_PARAM_DETAILS = 24;
+/** Longest per-parameter description kept, in characters. */
+export const MAX_PARAM_DESCRIPTION_CHARS = 160;
+
+/**
+ * One compact row per top-level parameter: name, type, whether it is required, and a
+ * short description.
+ *
+ * Top level only, on purpose. Nested paths already appear in `paramNames` for search,
+ * and a nested tree would multiply the payload for a view nobody scans that way. This
+ * is the "what is this tool's shape" answer, not a schema browser.
+ *
+ * Types are rendered compactly (`object{3}`, `array<string>`, `string (enum)`,
+ * `string | number`) because that is what distinguishes one parameter from another at
+ * a glance; the full JSON stays available behind the raw-preview toggle.
+ * @param node - a JSON-Schema node.
+ * @param limits - deployment bounds (for the description cap).
+ * @returns the rows, or an empty array when the schema declares no parameters.
+ */
+export function collectParamDetails(node, limits = DEFAULT_LIMITS) {
+	if (node === null || typeof node !== "object") return [];
+	const properties = node.properties;
+	if (properties === null || typeof properties !== "object") return [];
+	// `required` is a sibling array of names; a Set keeps the per-row test O(1).
+	const required = new Set(
+		Array.isArray(node.required) ? node.required.filter((name) => typeof name === "string") : [],
+	);
+	const cap = Math.min(limits.maxDescriptionChars, MAX_PARAM_DESCRIPTION_CHARS);
+	const rows = [];
+	for (const name of Object.keys(properties)) {
+		if (rows.length >= MAX_PARAM_DETAILS) break;
+		const child = properties[name];
+		const raw = child !== null && typeof child === "object" && typeof child.description === "string" ? child.description.trim() : "";
+		const description = raw.length > cap ? `${raw.slice(0, cap)}…` : raw;
+		rows.push({
+			name,
+			type: compactTypeOf(child),
+			...(required.has(name) ? { required: true } : {}),
+			...(description === "" ? {} : { description }),
+		});
+	}
+	return rows;
+}
+
+/**
+ * A one-line type label for a JSON-Schema node.
+ *
+ * Three shapes matter to a reader and nothing else does: what kind of value it takes,
+ * how many keys an object carries, and whether the value is constrained to a list.
+ * Unions are flattened because `string | number` is the whole useful fact.
+ * @param node - a JSON-Schema node.
+ * @returns the label; never empty.
+ */
+export function compactTypeOf(node) {
+	if (node === null || typeof node !== "object") return "unknown";
+	const branches = [node.anyOf, node.oneOf]
+		.filter((value) => Array.isArray(value))
+		.flatMap((value) => value);
+	if (branches.length > 0) {
+		const labels = branches
+			.slice(0, 3)
+			.map((branch) => (branch !== null && typeof branch === "object" ? String(compactTypeOf(branch)) : "unknown"));
+		return labels.length === 0 ? "unknown" : labels.join(" | ");
+	}
+	const type = node.type;
+	if (type === "array") {
+		const items = node.items;
+		return items !== null && typeof items === "object" ? `array<${compactTypeOf(items)}>` : "array";
+	}
+	if (type === "object") {
+		const properties = node.properties;
+		if (properties !== null && typeof properties === "object") {
+			return `object{${Object.keys(properties).length}}`;
+		}
+		return "object";
+	}
+	const isEnum = Array.isArray(node.enum) && node.enum.length > 0;
+	if (typeof type === "string") return isEnum ? `${type} (enum)` : type;
+	return isEnum ? "(enum)" : "unknown";
 }
 
 /**

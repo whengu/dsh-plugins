@@ -20,6 +20,10 @@ import {
 	splitMcpToolName,
 	summarizeMcpTools,
 	summarizeTools,
+	collectParamDetails,
+	collectParamNames,
+	compactTypeOf,
+	MAX_PARAM_DETAILS,
 } from "../lib/index.js";
 
 const problems = [];
@@ -40,6 +44,87 @@ check(splitMcpToolName(undefined) === undefined, "a non-string name is rejected"
 const nested = splitMcpToolName("mcp__my__server__tool");
 check(nested?.server === "my__server", "server names containing __ must survive the split");
 check(nested?.tool === "tool", "the tool part is whatever follows the last separator");
+
+// --- collectParamNames / collectParamDetails / compactTypeOf ---------------
+// These three feed the search index and the expanded row. They run on the FULL
+// schema at the host, which is the whole point: the browser only ever sees a
+// preview, so anything derived there would be lost for the biggest schemas.
+check(
+	JSON.stringify(collectParamNames({ type: "object", properties: { a: {}, b: {} } })) === '["a","b"]',
+"flat parameter names are collected in order",
+);
+check(collectParamNames(undefined).length === 0, "a missing schema yields no names");
+check(
+	JSON.stringify(collectParamNames({ type: "object", properties: { cfg: { properties: { deep: {} } } } })) ===
+		'["cfg","cfg.deep"]',
+"nested parameters are dot-joined",
+);
+// A self-reference through `allOf` must terminate: `depth + 1` on the union branch
+// is what stops it, and dropping that increment used to recurse forever.
+const selfRef = { type: "object", properties: { a: {} } };
+selfRef.properties.a.allOf = [selfRef];
+check(collectParamNames(selfRef).length <= 4, "a self-referencing schema must terminate");
+// Width is bounded independently of depth: a flat object with 100k keys is one
+// level deep, so a depth-only bound would collect every one of them.
+const wideProperties = {};
+for (let index = 0; index < 100000; index += 1) wideProperties[`k${index}`] = { type: "string" };
+const wideNames = collectParamNames({ type: "object", properties: wideProperties });
+check(
+	wideNames.length <= 200,
+	`a pathologically wide schema must be bounded, saw ${wideNames.length} names`,
+);
+
+check(compactTypeOf({ type: "string" }) === "string", "a plain type reads as itself");
+check(
+	compactTypeOf({ type: "array", items: { type: "string" } }) === "array<string>",
+"an array spells out its item type",
+);
+check(
+	compactTypeOf({ type: "object", properties: { a: {}, b: {} } }) === "object{2}",
+"an object reports how many keys it carries",
+);
+check(
+	compactTypeOf({ type: "string", enum: ["x"] }) === "string (enum)",
+"an enum is called out",
+);
+check(
+	compactTypeOf({ anyOf: [{ type: "string" }, { type: "number" }] }) === "string | number",
+"union branches are flattened",
+);
+check(compactTypeOf(null) === "unknown", "a missing node is unknown, never a guess");
+
+const detailRows = collectParamDetails({
+	type: "object",
+	required: ["command"],
+	properties: { command: { type: "string" }, cwd: { type: "string" } },
+});
+check(detailRows.length === 2, `one row per top-level parameter, saw ${detailRows.length}`);
+check(detailRows[0].name === "command", "rows keep schema order");
+check(detailRows[0].required === true, "a listed required name is marked required");
+check(detailRows[1].required === undefined, "an unlisted parameter carries no required flag");
+check(collectParamDetails({ type: "string" }).length === 0, "a non-object schema has no rows");
+const wideRows = collectParamDetails({ type: "object", properties: wideProperties });
+check(
+	wideRows.length === MAX_PARAM_DETAILS,
+	`rows are capped at ${MAX_PARAM_DETAILS}, saw ${wideRows.length}`,
+);
+// The reason the rows exist at all: they are derived from the FULL schema, so a
+// schema big enough to be truncated on the wire still describes its parameters.
+const oversized = {
+	name: "big",
+	description: "",
+	parameters: {
+		type: "object",
+		required: ["command"],
+		properties: { command: { type: "string", description: "x".repeat(5000) } },
+	},
+};
+const capped = summarizeTools([oversized], { ...DEFAULT_LIMITS, maxSchemaChars: 40 }).local[0];
+check(capped.schemaTruncated === true, "the preview must actually be truncated for this check to mean anything");
+check(
+	Array.isArray(capped.paramDetails) && capped.paramDetails[0]?.name === "command",
+"parameter rows must survive a truncated preview",
+);
 
 // --- summarizeMcpTools ----------------------------------------------------
 // Each tool is an entry carrying its own description, not a bare name: the panel
