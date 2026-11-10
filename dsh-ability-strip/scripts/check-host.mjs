@@ -594,6 +594,26 @@ if (typeof fakeCtx.effectDisposer === "function") {
 		mcpBig[0].tools[0].schemaChars === JSON.stringify(huge).length,
 		"an MCP tool must report the full schema size",
 	);
+	// A CUSTOM limit must reach the MCP path too. The default-only check above
+	// passed while `summarizeMcpTools` dropped its `limits` argument entirely —
+	// `toolEntry` silently fell back to DEFAULT_LIMITS. This is the regression guard.
+	const mcpNarrow = summarizeMcpTools(
+		[{ name: "mcp__srv__big", description: "d".repeat(80), parameters: huge }],
+		{ ...DEFAULT_LIMITS, maxDescriptionChars: 10, maxSchemaChars: 10 },
+	);
+	check(
+		mcpNarrow[0].tools[0].description.length <= 11,
+		`a custom maxDescriptionChars must reach MCP tools, saw ${mcpNarrow[0].tools[0].description.length}`,
+	);
+	check(
+		mcpNarrow[0].tools[0].schema.length <= 11,
+		`a custom maxSchemaChars must reach MCP tools, saw ${mcpNarrow[0].tools[0].schema.length}`,
+	);
+	// The reported size is still the FULL measurement regardless of the wire cap.
+	check(
+		mcpNarrow[0].tools[0].schemaChars === JSON.stringify(huge).length,
+		"an MCP tool's reported size must not depend on the wire cap",
+	);
 }
 
 // --- Deployment bounds: defaults must equal the previous literals -------------
@@ -635,9 +655,12 @@ if (typeof fakeCtx.effectDisposer === "function") {
 		description: "d".repeat(500),
 		parameters: { type: "object", properties: { a: { type: "string", description: "x".repeat(500) } } },
 	};
-	const ctxFor = () => ({
+	// `resolveAgent` reads ctx.get("agents"), NOT ctx.agents. A fake that only
+	// sets ctx.agents silently produces global-view reads forever, which is how
+	// an earlier version of this check passed without ever exercising `remembered`.
+	const ctxFor = (live = true) => ({
 		tools: { schemas: () => [bigSchema] },
-		agents: { get: () => ({ id: "a" }) },
+		get: (name) => (name === "agents" ? { get: () => (live ? { id: "a" } : void 0) } : void 0),
 		on: () => () => {},
 	});
 	const readWith = (limits) => createToolSummaryReader(ctxFor(), limits).read("s1");
@@ -663,16 +686,22 @@ if (typeof fakeCtx.effectDisposer === "function") {
 	check(narrow.local[0].schemaTruncated === true, "a capped schema must be marked truncated");
 
 	// maxRememberedSessions must bound the memory map, not just be accepted.
-	const reader = createToolSummaryReader(ctxFor(), { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
-	// Force a released agent so each session falls through to its remembered answer.
-	const releasedCtx = {
-		tools: { schemas: () => [bigSchema] },
-		agents: { get: () => void 0 },
-		on: () => () => {},
-	};
-	const memReader = createToolSummaryReader(releasedCtx, { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
-	void reader;
-	check(memReader.remembered === 0, "a reader with no agent must not remember anything");
+	// Drive five DISTINCT live-agent sessions: each one writes a remembered
+	// answer, so a limit of 2 must leave exactly two, not five.
+	const memCtx = ctxFor(true);
+	const memReader = createToolSummaryReader(memCtx, { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
+	for (let index = 0; index < 5; index += 1) memReader.read(`session-${index}`);
+	check(
+		memReader.remembered === 2,
+		`maxRememberedSessions must bound the map to 2, saw ${memReader.remembered}`,
+	);
+	// A released agent must be served from memory, which proves the entries are real.
+	const released = createToolSummaryReader(ctxFor(false), { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
+	const releasedAnswer = released.read('session-0');
+	check(
+		releasedAnswer.stale !== true,
+		"a reader with no agent and no memory must not invent a stale answer",
+	);
 }
 
 console.log("---");

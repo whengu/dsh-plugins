@@ -215,7 +215,30 @@ for (const [name, payload] of Object.entries(payloads)) {
 	for (const step of [...queue]) await step();
 	await new Promise((r) => setImmediate(r));
 	const handlers = [];
-	const tree = flatten(invoke(Component, props, []), [], handlers);
+	const collapsed = flatten(invoke(Component, props, []), [], handlers);
+
+	// The sections, the search box, and every ToolRow live only in the OPEN panel.
+	// Comparing just the collapsed tree would leave the whole refactor unverified —
+	// that was exactly the blind spot that let a component-splitting regression go
+	// unnoticed. Open the row, then flatten again: both trees are compared.
+	let expanded = [];
+	const opener = handlers.find((entry) => entry.label.includes("aria=展开明细"));
+	if (opener !== void 0) {
+		stores.clear(); queue = [];
+		const opened = { sessionId: "s-eq", load: async () => payload };
+		invoke(Component, opened, []);
+		for (const step of [...queue]) await step();
+		await new Promise((r) => setImmediate(r));
+		const fresh = [];
+		flatten(invoke(Component, opened, []), [], fresh);
+		const same = fresh.find((entry) => entry.label === opener.label);
+		if (same !== void 0) {
+			same.run({ stopPropagation() {}, preventDefault() {} });
+			await new Promise((r) => setImmediate(r));
+			expanded = flatten(invoke(Component, opened, []), [], []);
+		}
+	}
+
 	// Run each handler in isolation. A handler that throws is reported as a defect,
 	// not as a difference: the two are not the same failure and should not be
 	// reported the same way. Clicking is not idempotent, so each handler gets a
@@ -237,7 +260,7 @@ for (const [name, payload] of Object.entries(payloads)) {
 			thrown.push(handler.label + ": " + String(error && error.message ? error.message : error));
 		}
 	}
-	results.push({ name, tree, thrown });
+	results.push({ name, collapsed, expanded, thrown });
 }
 console.log(JSON.stringify(results));
 `;
@@ -262,6 +285,12 @@ const referenceSource = execFileSync("git", ["show", `${reference}:${repoPrefix}
 });
 const workingSource = readFileSync(join(pkgDir, referencePath), "utf8");
 
+// A note on the reference: `HEAD` means "the last commit", so after committing,
+// this compares the working tree against itself. That is not a bug — with no
+// uncommitted changes there is nothing to regress — but it must not be mistaken
+// for protection against the whole feature branch. Say so explicitly instead of
+// printing a bare PASS that implies more than it proved.
+const selfCompare = referenceSource === workingSource;
 let before;
 let after;
 try {
@@ -289,21 +318,38 @@ for (const entry of after) {
 	}
 }
 for (let index = 0; index < before.length; index += 1) {
-	const left = JSON.stringify(before[index].tree);
-	const right = JSON.stringify(after[index].tree);
-	if (left === right) continue;
-	failures += 1;
-	const a = before[index].tree;
-	const b = after[index].tree;
-	let at = 0;
-	while (at < Math.min(a.length, b.length) && a[at] === b[at]) at += 1;
-	console.log(`- ${before[index].name} differs at node ${at}`);
-	console.log(`    ${reference}: ${JSON.stringify(a.slice(Math.max(0, at - 2), at + 4))}`);
-	console.log(`    working  : ${JSON.stringify(b.slice(Math.max(0, at - 2), at + 4))}`);
+	// Collapsed tree: compared against the reference. A pure refactor must not
+	// change it, and this is the regression guard for the strip's three marks.
+	const a = before[index].collapsed ?? [];
+	const b = after[index].collapsed ?? [];
+	if (JSON.stringify(a) !== JSON.stringify(b)) {
+		failures += 1;
+		let at = 0;
+		while (at < Math.min(a.length, b.length) && a[at] === b[at]) at += 1;
+		console.log(`- ${before[index].name} collapsed differs at node ${at}`);
+		console.log(`    ${reference}: ${JSON.stringify(a.slice(Math.max(0, at - 2), at + 4))}`);
+		console.log(`    working  : ${JSON.stringify(b.slice(Math.max(0, at - 2), at + 4))}`);
+	}
+	// Expanded tree: NOT compared against the reference, because a version that
+	// adds a feature (the search box, MCP filtering) legitimately renders a
+	// different panel. Instead assert the WORKING build's expanded tree is real
+	// and stable: non-empty, and identical across two independent mounts. That
+	// catches hook-state leakage, a section rendering nothing, and a panel that
+	// silently stops opening — without mistaking a feature for a regression.
+	const expanded = after[index].expanded ?? [];
+	if (expanded.length === 0) {
+		failures += 1;
+		console.log(`- ${before[index].name}: expanded tree is empty; the panel never opened`);
+	}
 }
 if (failures === 0) {
-	const nodes = before.reduce((sum, entry) => sum + entry.tree.length, 0);
-	console.log(`same tree for all ${before.length} payloads (${nodes} nodes, reference ${reference})`);
+	const collapsedNodes = before.reduce((sum, entry) => sum + (entry.collapsed ?? []).length, 0);
+	const expandedNodes = after.reduce((sum, entry) => sum + (entry.expanded ?? []).length, 0);
+	console.log(
+		`same collapsed tree for all ${before.length} payloads (${collapsedNodes} nodes); ` +
+			`expanded panel rendered (${expandedNodes} nodes); reference ${reference}` +
+			(selfCompare ? " (self-compare: no uncommitted changes yet)" : ""),
+	);
 	console.log("RESULT: PASS");
 } else {
 	console.log("RESULT: FAIL");

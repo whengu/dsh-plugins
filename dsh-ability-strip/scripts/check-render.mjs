@@ -1258,6 +1258,69 @@ const transitionProps = {
 	);
 }
 
+
+// --- The search box filters BOTH halves of the tool surface ---------------
+// A query that only appears as a parameter name must narrow the non-MCP list
+// AND the MCP servers. Before the query was shared, MCP tools were rendered
+// unfiltered and their haystack was dead data.
+{
+	const bothHalves = {
+		...payloadOk,
+		tools: {
+			...payloadOk.tools,
+			local: [
+				{ name: "bash", description: "Run a shell", paramNames: ["command"] },
+				{ name: "read", description: "Read a file", paramNames: ["path"] },
+			],
+			servers: [
+				{
+					server: "local",
+					tools: [
+						{ name: "query", description: "Run a query", paramNames: ["command", "sql"] },
+						{ name: "ping", description: "Ping", paramNames: [] },
+					],
+				},
+			],
+		},
+	};
+	const bothProps = { sessionId: "s-both-halves", load: async () => bothHalves };
+	mount(bothProps);
+	await settle();
+	await flush();
+	const openRow = findButton(render(bothProps), "明细");
+	openRow?.props?.onClick?.();
+	await flush();
+	await settle();
+	const beforeTree = render(bothProps);
+	const box = findByLabel(beforeTree, "搜索工具");
+	check(box !== undefined, "the panel must offer a search box");
+	// collectElements EXPANDS function components and does not keep the wrapper
+	// node, so `props.tool` is gone by the time we look. The tool name is still
+	// rendered as text, so match against the collected leaves instead.
+	const toolNamesOf = (tree) => {
+		const text = textOf(tree);
+		return ["bash", "read", "query", "ping"].filter((name) => text.includes(name));
+	};
+	const before = toolNamesOf(beforeTree);
+	check(
+		["bash", "read", "query", "ping"].every((name) => before.includes(name)),
+		`before the query all four tools must show, saw ${JSON.stringify(before)}`,
+	);
+	if (box !== undefined) {
+		box.props.onChange({ target: { value: "command" } });
+		await flush();
+		const after = toolNamesOf(render(bothProps));
+		check(
+			after.includes("bash") && after.includes("query"),
+			`both halves must keep the parameter-name match, saw ${JSON.stringify(after)}`,
+		);
+		check(
+			!after.includes("read") && !after.includes("ping"),
+			`both halves must drop non-matching tools, saw ${JSON.stringify(after)}`,
+		);
+	}
+}
+
 // --- No markdown leaks into the rendered text ------------------------------
 // Panel copy is a plain JS string, not markdown: `**bold**` would print its
 // asterisks to the reader. A reader hit exactly that, so it is pinned here.

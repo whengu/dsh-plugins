@@ -285,15 +285,15 @@ node scripts/verify-pack.mjs <tarball>   # tarball 与本树一致，引用齐�
 pnpm check                               # 前三项一起
 ```
 
-每项钉死什么：
+每项钉死什么（按当前四个检查脚本，0.10.0 移除推送后重写）：
 
-- **check-host** 导入 `lib/index.js`，钉死承重假设：`mcp__<server>__<tool>` 拆分，包括服务器名本身含 `__` 的情况（在**最后一个**分隔符处拆）以及拒绝非 MCP 名。随后检查汇总形状、注册表抛错变成 `error` 而不是静默零。路由部分是**两条**：读路由在 `/api/ability-strip`，只接受 POST、认载体 `client-request` 信封、对不可解析的 body 回 400；推送路由在 `/api/ability-strip/events`（路径按字面钉死，和浏览器硬编码的那串必须一致），只接受 GET、回 `text/event-stream`。变更流的契约逐条测：开流先写一条 SSE 注释、紧接着一帧当前版本；**开流本身不查注册表**（缓存是冷的，所以真读了会立刻多一次 `schemas()`）；`tools/change` 恰好推出下一版；请求中止与 effect dispose 都必须把流关掉。缓存部分：`tools/change` 恰好失效一次、重复读取不碰注册表、同一条 `tools/change` 订阅既管失效又管推送（订阅者收到变更、退订后收不到、订阅不读注册表）。
-- **check-bundle-contract** 用一个桩 `window.__ModuleLoader__` 求值 `lib/client.js`，断言 factory id 等于包名、只 require 基线模块（`react`、`react-dom`）、导出的 `inject` 列表覆盖实际读取的每个 Remote 和 service（含 `connection`），且 `apply()` 恰好往 `conversation.composer.dock` 注册一个组件、inject face 暴露 `load` 且*不*遮蔽内置 `sessionId` prop。基线允许表只留 React，并单列一条断言：**只要 `require` 里出现任何 `@deepseek-ai/*` 就失败**——把官方那条"不加载 Harness Client 包"从注释变成会红的检查（变异验证：把 primitives 加回去，该检查立刻红并打印官方出处）。
-- **check-render** 用一个小 hook 运行时构建树，桩掉 `document.body`、`createPortal`、`setInterval` 与 `EventSource` 记录器（后者用于断言**不再开流**），断言每种显示状态下读者可见的文本：首绘（pending，从不下假结论）、已加载（`skill N`、MCP 工具数、不打印服务器 id）、**配置了服务器但零工具注册时读作 未连接**且仍列为已配置、展开态（portal 面板带两节标题、skill `/name`、`whenToUse`、已连接服务器及工具数和工具名称、Loader phase、资源插件行、bundles、刷新与关闭控件）、无资源插件、工具注册表失败（`读取失败`，绝不静默报已连接/未连接）、skills/bundles 独立失败、空但成功的读取（`未连接`）、以及 load 抛错（错误必须可见）。它还证明收起态不构建任何明细树（dock 在 composer 每次击键都会重渲染）。
-- **"不推送、不空转"本身在 check-render 里被钉死**：`setInterval` 被捕获而从不调度——**任何状态下只要注册了定时器就算失败**（这是"旧问题消失"的直接证据）；每次挂载恰好开一条流、地址是文档相对路径 `api/ability-strip/events`、卸载时关掉并摘掉 visibility 监听器。三道护栏对应三类浪费，各自有独立断言：隐藏标签页收到帧也不读（切回来补读）、同一答案的帧返回同一个 state 对象（不渲染）、读取未完成时的一波帧折叠成一次补偿读取。推送断开这一路单独测：报错后**恰好**补读一次且标记可见、再报错**不**再补读、`open` 后标记清除且下一次报错又会补读一次、关掉的流在切回标签页时重开一条（活着的时候不许重开）。
-- **故障触发有自己的变异矩阵。** 三个条件每一个都被证明是必要的——破坏它、看对应检查失败：去掉 `tools.error` 会让读不动的注册表弹窗，去掉"有启用行"要求会让没配置的 profile 弹窗，把"没有服务器"强制为 false 会让真故障漏报。每条否定检查都跑完整的提交序列，否则错误弹开的对话框根本到不了可见阶段。
-- **变化流的泄漏不变量逐条测**（check-host）：`openEventStream` 用真实 `ReadableStream` 直接驱动，三条结束路径——请求 abort、消费端 cancel、unload 走集合——每一条都必须把订阅者和 unload 集合里的条目一起清掉，且重复拆除不得复活订阅者。订阅者数量由 reader 只读的 `subscribers` 暴露，所以"忘了 detach"或"忘了从集合里删"都会被抓到，而不是只跑了绿。
+- **check-host** 导入 `lib/index.js`，钉死承重假设：`mcp__<server>__<tool>` 拆分（包括服务器名本身含 `__` 时在**最后一个**分隔符处拆），以及拒绝非 MCP 名。随后检查：工具描述与参数体量如何上 wire（超长截断但 `schemaChars` 仍是完整测量）、`collectParamNames` 的深度/宽度/扇出三重边界与自引用收敛、`localeCompare` 排序、`Config` 默认值与三个常量一致且拒绝负值。读路径用真实链路驱动 `createToolSummaryReader`：自定义上限必须同时到达 `local` 和 MCP 工具，`maxRememberedSessions` 必须真的把记忆表限制在 N 条（用多个 live-agent 会话驱动，而不是平凡真值）。缓存部分：`tools/change` 恰好失效一次、重复读取不碰注册表、活跃 agent 的 liveness 变化强制重读。
+- **check-bundle-contract** 用一个桩 `window.__ModuleLoader__` 求值 `lib/client.js`，断言 factory id 等于包名、只 require 基线模块（`react`、`react-dom`）、导出的 `inject` 列表覆盖实际读取的每个 Remote 和 service（含 `connection`），且 `apply()` 恰好往 `conversation.composer.dock` 注册一个组件、inject face 暴露 `load` 且*不*遮蔽内置 `sessionId` prop。基线允许表只留 React，并单列一条断言：**只要 `require` 里出现任何 `@deepseek-ai/*` 就失败**——把官方那条「不加载 Harness Client 包」从注释变成会红的检查。读取路径还钉死 abort 与超时表达式（`activeRead`、`pendingOptions`、`void run(pending)`）。
+- **check-render** 用一个保真的 hook 运行时构建树：槽位按组件实例隔离、`useEffect`/`useCallback`/`useMemo` 做依赖比较（否则挂载 effect 每次重渲都会重发读，把待测的状态转换覆盖掉）。桩掉 `document.body` 与 `createPortal`。断言每种状态下读者可见的文本：首绘（pending，从不下假结论）、已加载、**配置了服务器但零工具注册时读作连接故障**、展开态四个分区、skills/bundles/工具各自独立失败、空但成功的读取、load 抛错。还钉死：收起态不构建任何明细树、无 Markdown 星号泄漏、Enter/Space 键盘往返、关闭面板后焦点回到行、**故障标记可点击且点击真的打开对话框**、**同一次挂载内 live→stale 的转换**、技能读取失败不渲染「0」徽标、**搜索同时过滤非 MCP 与 MCP 两个分区**（含按参数名命中）、以及不可序列化 schema 明确标「参数体量未知」。
+- **check-equivalence** 拿 git 上一个版本与工作区各自渲染同一组 payload（含能触发 MCP 故障的分支），逐节点比对**收起态整棵树**；单测只钉住具体事实，改一个 tooltip 或某个 chip 状态的胜出顺序仍会通过，这个能抓住。同时**收集并执行每个点击处理器**（抛异常单独报告，与树差异区分），并渲染**展开态**确认面板确实打开、不为空。提交后 reference 即 `HEAD`、等于自比，脚本会明确打印「self-compare」，不假装它保护了整条特性分支。
 - **verify-pack** 解开 `.tgz` 与本树逐条比对（`package.json` 按值比，因为 pnpm 会重写其格式），并检查 `main` / `exports` / `files` / `dsh.bundle.patch` 引用的每个文件确实在载荷里。
+
+这些检查各自做过变异验证：把承重的一行改回去，对应的检查必须变红并打印具体差异，然后还原到字节一致。已验证过的包括：`samePayload` 漏比 `stale`/`scope`/schema 字段、hook 桩退回共享槽位、工具数改用 `local.length`、`collectParamNames` 的 `allOf` 不递增深度、`readToolSummary` 与 `summarizeMcpTools` 丢掉 `limits`、`bound()` 不限制、MCP 分区不按 query 过滤、展开按钮 aria-label 改掉、等价性展开态强制为空。
 
 这些能抓住 `node --check` 抓不住的：未定义标识符、写错的 slot 名、读了 Remote 却没声明对应 inject、以及与 MCP 客户端约定不一致的工具名拆分。
 
@@ -304,6 +304,10 @@ pnpm check                               # 前三项一起
 - **0.5.0（剥离 primitives）已在真机上验证**：装 0.5.0 后硬刷新，自绘 3 个 svg 正常渲染（`stroke` 计算值 = `--dsw-alias-label-primary`），面板布局与 tag 对齐正常、刷新按钮确实发出请求，20 秒空闲零请求，源码零 `setInterval`/`setTimeout`。宿主半边未改，故当时无需重启。
 - **0.6.0（tools 标记）待重启 Host 后才能真机验证宿主半边**：新增的 `local` / `scope` 字段由宿主产出，替换已安装包的宿主 JS 必须重启（INSTALL.md §15.1）。客户端半边硬刷新即可，且在旧宿主下 `totalTools` 仍能正确显示——只是非 MCP 清单会空、scope 会显示"全局注册"。
 （**已重启验证**：	ools 72、标注“本会话 agent 可见”、非 MCP 工具名清单非空）
+> 以下 0.3.0–0.9.x 的记录是**历史归档**：那时插件有一条 SSE 推送路由
+> （`GET /api/ability-strip/events`）和 `openEventStream`，0.10.0 起这些代码
+> 与其测试已全部移除，改为按需读取。当前检查内容以「每项钉死什么」一节为准。
+
 - **0.7.0（图标化 + 工具描述）已部分真机验证**：收起态三个标记只剩图标与数字（`23 / 28 / 72`），行宽 132px → **114px**；`aria-label` 与 tooltip 保留完整状态文案。**工具描述需再重启一次宿主**才出现——描述由宿主产出，运行中的宿主仍是 0.6.0；客户端已按"旧宿主只给名字"降级（`asTool`），不会渲染成 undefined。
 - 变异矩阵（0.4.0 本轮实测，19 条，每条都确认检查会失败并逐条还原到字节一致）：去掉隐藏标签页护栏、去掉 `samePayload` 抑制、去掉 in-flight 闩、去掉"打开面板即读"、去掉卸载时关流、重新加回 15 秒 `setInterval`、让变更流去读注册表、去掉宿主 unload 关流、重命名宿主路由名、只改浏览器侧路由名、去掉宿主 abort 监听、**去掉 `error` 监听、去掉"一次故障只补读一次"这层闸、不重置这道闸、去掉"切回标签页重开死流"、把重开改成无条件重开（会重复开流）、去掉拆除时的 `detach`、去掉拆除时对 unload 集合的删除**——全部被对应检查抓到。
 - 同上但**未被任何断言覆盖**的一处，如实记下：`openEventStream` 里 `send()` 的 `catch`（`controller.enqueue` 抛错时走 `shutdown`）目前**没有任何可触发的路径**——只有"流被关闭/置错但拆除没跑"才会走到它，而代码里所有关闭点都先走 `shutdown`。把 `catch` 改回"只置标志不拆除"，检查仍然全绿。这条修复是对的安全网，不是被测试证明的行为；加测试只能靠给生产代码塞一个测试专用入口，判定不划算。

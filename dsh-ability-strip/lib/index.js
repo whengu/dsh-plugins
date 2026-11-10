@@ -216,23 +216,35 @@ function toolEntry(name, schema, limits = DEFAULT_LIMITS) {
  * the word appears in neither its name nor its description. Union branches are
  * followed because that is how a multi-typed parameter is written.
  *
- * Bounded by depth rather than by count: a pathological schema with thousands of
- * nested properties must not turn one panel read into a megabyte of names, and the
- * names below the bound add nothing a reader would search for.
+ * Three independent bounds, because a pathological schema can be deep, wide, OR
+ * branchy, and each needs its own guard: depth stops self-references, the output
+ * cap stops a single object with a hundred thousand keys, and the visited-node cap
+ * stops a union that fans out exponentially. All three are needed — a depth limit
+ * alone does nothing about a flat object with 100k properties.
  * @param node - a JSON-Schema node.
  * @param prefix - the dotted path so far.
  * @param out - collector, shared across the recursion.
  * @param depth - current nesting depth.
+ * @param budget - remaining visit allowance, shared across the recursion.
  * @returns the collected names.
  */
-export function collectParamNames(node, prefix = "", out = [], depth = 0) {
-	if (node === null || typeof node !== "object" || depth > 4) return out;
+export const MAX_PARAM_NAMES = 200;
+export const MAX_SCHEMA_NODES = 500;
+export const MAX_SCHEMA_DEPTH = 4;
+
+export function collectParamNames(node, prefix = "", out = [], depth = 0, budget = { visits: 0 }) {
+	if (node === null || typeof node !== "object") return out;
+	if (depth > MAX_SCHEMA_DEPTH || out.length >= MAX_PARAM_NAMES || budget.visits >= MAX_SCHEMA_NODES) {
+		return out;
+	}
+	budget.visits += 1;
 	const properties = node.properties;
 	if (properties !== null && typeof properties === "object") {
 		for (const key of Object.keys(properties)) {
+			if (out.length >= MAX_PARAM_NAMES || budget.visits >= MAX_SCHEMA_NODES) break;
 			const path = prefix === "" ? key : `${prefix}.${key}`;
 			out.push(path);
-			collectParamNames(properties[key], path, out, depth + 1);
+			collectParamNames(properties[key], path, out, depth + 1, budget);
 		}
 	}
 	for (const branchKey of ["anyOf", "oneOf", "allOf"]) {
@@ -241,7 +253,10 @@ export function collectParamNames(node, prefix = "", out = [], depth = 0) {
 		// `depth + 1`, not `depth`: a schema that references itself through `allOf`
 		// would otherwise recurse at the same level forever. Union branches are a
 		// descent like a property is, so they must count against the bound.
-		for (const branch of branches) collectParamNames(branch, prefix, out, depth + 1);
+		for (const branch of branches) {
+			if (out.length >= MAX_PARAM_NAMES || budget.visits >= MAX_SCHEMA_NODES) break;
+			collectParamNames(branch, prefix, out, depth + 1, budget);
+		}
 	}
 	return out;
 }
@@ -266,7 +281,7 @@ export function summarizeMcpTools(schemas, limits = DEFAULT_LIMITS) {
 	for (const schema of Array.isArray(schemas) ? schemas : []) {
 		const split = splitMcpToolName(schema?.name);
 		if (split === void 0) continue;
-		const entry = toolEntry(split.tool, schema);
+		const entry = toolEntry(split.tool, schema, limits);
 		const tools = byServer.get(split.server);
 		if (tools === void 0) byServer.set(split.server, [entry]);
 		else tools.push(entry);
@@ -504,14 +519,22 @@ export function createToolSummaryReader(ctx, limits = DEFAULT_LIMITS) {
 export function apply(ctx, config) {
 	// Resolve the deployment's bounds once, at activation.
 	//
-	// `config` may be absent entirely (a patch layer that omits `config:`), or hold
-	// only some keys (a hand-written layer that bypasses the schema). Both are
-	// legitimate, so each bound falls back independently rather than assuming the
-	// schema already filled the object in.
+	// Cordis validates the row against `Config` before calling `apply`, so `config`
+	// is normally complete. Calling `Config` again costs one validation and makes
+	// this function safe for a caller that bypasses the loader: a negative cap would
+	// otherwise turn `slice(0, -1)` into a silent truncation, and a non-numeric
+	// session bound would leave the memory maps unbounded. Never throw here — a
+	// malformed config must degrade to the defaults, not stop the plugin loading.
+	let safe = DEFAULT_LIMITS;
+	try {
+		safe = Config(config);
+	} catch {
+		// Keep DEFAULT_LIMITS: the reader still works, just with shipped bounds.
+	}
 	const limits = Object.freeze({
-		maxDescriptionChars: config?.maxDescriptionChars ?? DEFAULT_LIMITS.maxDescriptionChars,
-		maxSchemaChars: config?.maxSchemaChars ?? DEFAULT_LIMITS.maxSchemaChars,
-		maxRememberedSessions: config?.maxRememberedSessions ?? DEFAULT_LIMITS.maxRememberedSessions,
+		maxDescriptionChars: safe.maxDescriptionChars,
+		maxSchemaChars: safe.maxSchemaChars,
+		maxRememberedSessions: safe.maxRememberedSessions,
 	});
 	ctx.effect(() => {
 		// One reader per Loader row: caches the current answer and remembers each
