@@ -1,6 +1,6 @@
 {
   "name": "dsh-ability-strip",
-  "version": "0.10.4",
+  "version": "0.12.1",
   "private": true,
   "description": "A read-only strip docked under the composer in the dsh Web GUI: how many skills this session sees, and whether any MCP server actually connected (tools registered), served by its own host half.",
   "type": "module",
@@ -25,7 +25,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "check": "node scripts/check-host.mjs && node scripts/check-bundle-contract.mjs && node scripts/check-render.mjs",
+    "check": "node scripts/check-host.mjs && node scripts/check-bundle-contract.mjs && node scripts/check-render.mjs && node scripts/check-equivalence.mjs . HEAD lib/client.js",
     "check:pack": "node scripts/verify-pack.mjs"
   },
   "files": [

@@ -11,6 +11,7 @@ import {
 	createToolSummaryReader,
 	MAX_CACHED_SCOPES,
 	MAX_DESCRIPTION_CHARS,
+	MAX_SCHEMA_CHARS,
 	ROUTE_CHANNEL,
 	ROUTE_ENDPOINT,
 	readToolSummary,
@@ -542,6 +543,55 @@ if (typeof fakeCtx.effectDisposer === "function") {
 	check(disposed.length === 1, "a repeated dispose must be a no-op");
 } else {
 	problems.push("apply did not return an effect disposer");
+}
+
+// --- the parameter schema: carried, measured, and capped -------------------
+// The schema is the part that costs context on every request, so the panel needs
+// both the preview AND the true size. The size must be measured on the full schema
+// before any cap: a capped preview would otherwise report its own length as the
+// tool's cost, which is the one number the reader is meant to act on.
+{
+	const small = summarizeTools([
+		{ name: "tiny", description: "d", parameters: { type: "object", properties: {} } },
+	]);
+	const entry = small.local[0];
+	check(typeof entry.schema === "string", "a tool with parameters must carry its schema");
+	check(
+		entry.schemaChars === JSON.stringify({ type: "object", properties: {} }).length,
+		`schemaChars must measure the serialized parameters, saw ${entry.schemaChars}`,
+	);
+	check(entry.schemaTruncated === void 0, "a small schema must not be marked truncated");
+
+	// A tool with no declared parameters carries no schema at all (nothing to show).
+	const none = summarizeTools([{ name: "bare", description: "" }]);
+	check(none.local[0].schema === void 0, "a tool without parameters must carry no schema");
+	check(none.local[0].schemaChars === 0, "a tool without parameters must report zero chars");
+
+	// An oversized schema is previewed, but its SIZE stays the full measurement.
+	const huge = { type: "object", properties: { blob: { type: "string", description: "x".repeat(9000) } } };
+	const big = summarizeTools([{ name: "huge", description: "", parameters: huge }]);
+	const bigEntry = big.local[0];
+	check(bigEntry.schemaTruncated === true, "an oversized schema must be marked truncated");
+	check(
+		bigEntry.schemaChars === JSON.stringify(huge).length,
+		`a truncated preview must still report the FULL size, saw ${bigEntry.schemaChars}`,
+	);
+	check(
+		bigEntry.schema.length <= MAX_SCHEMA_CHARS + 1,
+		`the preview must stay within the cap, saw ${bigEntry.schema.length}`,
+	);
+	check(
+		bigEntry.schemaChars > bigEntry.schema.length,
+		"the reported size must exceed the preview when truncated",
+	);
+
+	// MCP tools carry their schema too: the cap applies to every entry, not one path.
+	const mcpBig = summarizeMcpTools([{ name: "mcp__srv__big", description: "", parameters: huge }]);
+	check(mcpBig[0].tools[0].schemaTruncated === true, "an MCP tool's oversized schema must be capped too");
+	check(
+		mcpBig[0].tools[0].schemaChars === JSON.stringify(huge).length,
+		"an MCP tool must report the full schema size",
+	);
 }
 
 console.log("---");

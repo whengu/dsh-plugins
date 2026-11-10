@@ -95,6 +95,19 @@ export function splitMcpToolName(toolName) {
 	return { server, tool };
 }
 
+
+/**
+ * Longest parameter schema carried to the browser, in characters.
+ *
+ * The panel shows a tool's `parameters` because that is the part that actually
+ * costs context on every request — a name and a description are noise next to a
+ * nested object schema. It is capped for the same reason the description is: one
+ * pathological schema must not turn a panel read into a megabyte. A cut schema is
+ * reported as `schemaTruncated`, so the panel can say "this is a preview" instead
+ * of silently showing half a JSON document.
+ */
+export const MAX_SCHEMA_CHARS = 6000;
+
 /**
  * Longest description carried to the browser, exclusive of the ellipsis.
  *
@@ -107,16 +120,39 @@ export function splitMcpToolName(toolName) {
 export const MAX_DESCRIPTION_CHARS = 400;
 
 /**
- * One tool as the panel needs it: name plus its own description.
+ * One tool as the panel needs it: name, its own description, its parameter schema,
+ * and how big that schema is.
+ *
+ * `schemaChars` is measured on the FULL schema, before any cap, because it is the
+ * number the reader is meant to act on: it is a proxy for what every request pays.
  * @param name - the tool name without any MCP server prefix.
  * @param schema - the schema that carried it.
- * @returns the entry, with the description trimmed and capped.
+ * @returns the entry, with description and schema capped for the wire.
  */
 function toolEntry(name, schema) {
 	const raw = typeof schema?.description === "string" ? schema.description.trim() : "";
+	const description =
+		raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw;
+	// `parameters` is a JSON-Schema object; serializing it is the only honest way to
+	// size it. A tool without parameters still costs something (an empty object), so
+	// the measurement is of what would actually be sent.
+	let schemaText = "";
+	let schemaChars = 0;
+	try {
+		schemaText = schema?.parameters === void 0 ? "" : JSON.stringify(schema.parameters);
+		schemaChars = schemaText.length;
+	} catch {
+		// A cyclic or otherwise unserializable schema cannot be sized; report it as
+		// unknown rather than guessing a number.
+		schemaChars = -1;
+	}
+	const schemaTruncated = schemaChars > MAX_SCHEMA_CHARS;
 	return {
 		name,
-		description: raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw,
+		description,
+		schemaChars,
+		...(schemaText === "" ? {} : { schema: schemaTruncated ? `${schemaText.slice(0, MAX_SCHEMA_CHARS)}…` : schemaText }),
+		...(schemaTruncated ? { schemaTruncated: true } : {}),
 	};
 }
 

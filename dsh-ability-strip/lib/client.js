@@ -581,6 +581,12 @@ function computePlacement(rect, viewport) {
 			for (let index = 0; index < prevLocal.length; index += 1) {
 				if (prevLocal[index]?.name !== nextLocal[index]?.name) return false;
 				if (prevLocal[index]?.description !== nextLocal[index]?.description) return false;
+				// The schema is rendered too, so a silent re-read that changes it must
+				// count as news. Comparing only name and description left a stale schema
+				// on screen while claiming the answer was unchanged.
+				if (prevLocal[index]?.schemaChars !== nextLocal[index]?.schemaChars) return false;
+				if (prevLocal[index]?.schema !== nextLocal[index]?.schema) return false;
+				if (prevLocal[index]?.schemaTruncated !== nextLocal[index]?.schemaTruncated) return false;
 			}
 			// MCP is the field that changes in practice: compare the server list, each
 			// server's tool count, and each tool by value (two fetches never share
@@ -596,6 +602,11 @@ function computePlacement(rect, viewport) {
 				for (let t = 0; t < prevTools.length; t += 1) {
 					if (prevTools[t]?.name !== nextTools[t]?.name) return false;
 					if (prevTools[t]?.description !== nextTools[t]?.description) return false;
+					// Same three fields as the non-MCP list: one path must not be more
+					// forgiving than the other about what counts as a change.
+					if (prevTools[t]?.schemaChars !== nextTools[t]?.schemaChars) return false;
+					if (prevTools[t]?.schema !== nextTools[t]?.schema) return false;
+					if (prevTools[t]?.schemaTruncated !== nextTools[t]?.schemaTruncated) return false;
 				}
 			}
 			// Loader rows: enablement and phase are what the panel prints.
@@ -897,10 +908,16 @@ function computePlacement(rect, viewport) {
 		 * @returns an entry whose fields are always strings.
 		 */
 		function asTool(tool) {
-			if (typeof tool === "string") return { name: tool, description: "" };
+			if (typeof tool === "string") return { name: tool, description: "", schemaChars: 0 };
 			return {
 				name: typeof tool?.name === "string" ? tool.name : "",
 				description: typeof tool?.description === "string" ? tool.description : "",
+				// The parameter schema and its size. `schemaChars` is measured on the
+				// full schema by the host; `schema` may be a capped preview, so the two
+				// must not be confused (the size is the number worth acting on).
+				schema: typeof tool?.schema === "string" ? tool.schema : void 0,
+				schemaChars: typeof tool?.schemaChars === "number" ? tool.schemaChars : 0,
+				schemaTruncated: tool?.schemaTruncated === true,
 			};
 		}
 
@@ -913,10 +930,20 @@ function computePlacement(rect, viewport) {
 		 * rest of the list out of view; the tooltip shows the same (already truncated-at-the-host) text, so nothing is lost beyond the host's own cap.
 		 */
 		function ToolRow({ tool }) {
+			// The schema is the part that actually costs context on every request, so it
+			// is collapsed by default and its SIZE is shown even when collapsed: the
+			// number is what tells the reader whether this tool is worth its price.
+			const [showSchema, setShowSchema] = React.useState(false);
+			const size = tool.schemaChars ?? 0;
+			// Three cases, all reachable: a measurable size, the host's explicit "could
+			// not serialize it" (-1), and no declared parameters at all. The gate below
+			// must therefore be `size !== 0`, not `size > 0` — otherwise the unknown case
+			// silently renders as if this tool cost nothing.
+			const sizeLabel =
+				size < 0 ? "参数体量未知" : `${size.toLocaleString()} 字符参数`;
 			return h(
 				"div",
 				{
-					title: tool.description === "" ? tool.name : `${tool.name}\n${tool.description}`,
 					style: {
 						display: "flex",
 						flexDirection: "column",
@@ -927,9 +954,33 @@ function computePlacement(rect, viewport) {
 					},
 				},
 				h(
-					"span",
-					{ style: { fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
-					tool.name,
+					"div",
+					{ style: { display: "flex", alignItems: "baseline", gap: 6 } },
+					h(
+						"span",
+						{
+							title: tool.description === "" ? tool.name : `${tool.name}\n${tool.description}`,
+							style: {
+								fontSize: 12,
+								fontWeight: 600,
+								overflow: "hidden",
+								textOverflow: "ellipsis",
+								whiteSpace: "nowrap",
+								minWidth: 0,
+							},
+						},
+						tool.name,
+					),
+					// The size sits on the name row so a long list is scannable without
+					// expanding anything: big schemas are the ones to look at. `!== 0`
+					// rather than `> 0` so an unmeasurable schema still says so.
+					size !== 0
+						? h(
+								"span",
+								{ style: { marginLeft: "auto", fontSize: 10, opacity: 0.5, flexShrink: 0 } },
+								sizeLabel,
+							)
+						: null,
 				),
 				tool.description === ""
 					? null
@@ -948,8 +999,585 @@ function computePlacement(rect, viewport) {
 							},
 							tool.description,
 						),
+				// Only rendered when there is something to show: a tool with no declared
+				// parameters has nothing to expand, and an empty toggle is a dead control.
+				tool.schema === void 0
+					? null
+					: h(
+							"div",
+							{ style: { paddingTop: 1 } },
+							h(
+								"button",
+								{
+									type: "button",
+									onClick: () => setShowSchema((previous) => !previous),
+									"aria-expanded": showSchema,
+									style: {
+										display: "inline-flex",
+										alignItems: "center",
+										gap: 3,
+										padding: 0,
+										border: "none",
+										background: "none",
+										font: "inherit",
+										fontSize: 10.5,
+										opacity: 0.55,
+										cursor: "pointer",
+										color: "inherit",
+									},
+								},
+								showSchema ? "▾ 收起参数" : "▸ 展开参数",
+							),
+							showSchema
+								? h(
+										"pre",
+										{
+											style: {
+												margin: "3px 0 0",
+												padding: "5px 6px",
+												fontSize: 10,
+												lineHeight: 1.45,
+												opacity: 0.8,
+												whiteSpace: "pre-wrap",
+												wordBreak: "break-all",
+												maxHeight: 220,
+												overflowY: "auto",
+												background: "color-mix(in srgb, currentColor 6%, transparent)",
+												borderRadius: 6,
+											},
+										},
+										// Pretty-printed when it parses: a raw one-line schema is
+										// unreadable, and the reader came here to read it.
+										(() => {
+											try {
+												return JSON.stringify(JSON.parse(tool.schema), null, 2);
+											} catch {
+												return tool.schema;
+											}
+										})(),
+										tool.schemaTruncated ? "\n… （参数过长，仅显示前 6000 字符）" : "",
+									)
+								: null,
+						),
 			);
 		}
+
+/**
+ * The skills group: one row per visible skill, or the reason there are none.
+ *
+ * A component rather than an IIFE in the strip body: it takes exactly what it
+ * renders, so a change to the strip's internals cannot silently change this tree.
+ * @param props - the payload's `skills` block.
+ */
+function SkillsSection({ skills }) {
+	const entries = skills.entries ?? [];
+	return h(
+		"div",
+		null,
+		h(GroupHeading, {
+			icon: h(ui.IconSkillOutlineRegular, { size: 13 }),
+			name: "技能",
+			// A failed read gets NO badge, not a "0": "could not read" and "there are
+			// none" are different claims, and the section body already states which one
+			// this is. Printing 0 would turn our own failure into a fact about the
+			// session.
+			count: skills.error === void 0 ? entries.length : void 0,
+			note: "本会话可见",
+		}),
+		skills.error !== void 0
+			? h(
+					"div",
+					{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+					`skills/list 读取失败：${skills.error}`,
+				)
+			: entries.length === 0
+				? h(
+						"div",
+						{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+						"该会话没有可见技能。",
+					)
+				: entries.map((entry) => h(SkillRow, { key: `${entry.name}:${entry.path ?? ""}`, entry })),
+	);
+}
+
+/**
+ * The MCP group: which servers actually registered tools, the Loader rows behind
+ * them, and the one control this group owns (reopening the fault dialog).
+ *
+ * Everything it renders is a prop. The seven values it used to read out of the
+ * strip's enclosing scope are now an explicit list, so a change inside the strip
+ * cannot silently change this tree.
+ * @param props - connected servers, configured rows, the state words, and the
+ *   callback that reopens the fault explanation.
+ */
+function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers, stateLabel, fault, onShowFault }) {
+	return h(
+		"div",
+		null,
+		h(GroupHeading, {
+			icon: h(ui.IconGlobeOutlineRegular, { size: 13 }),
+			name: "MCP",
+			count: connectedServers.length,
+			// The words the collapsed mark no longer prints: this heading is where
+			// "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
+			note: stateLabel,
+		}),
+		// The connected list is the answer to "does it actually work": these servers
+		// have tools registered in the live registry.
+		tools.error !== void 0
+			? h(
+					"div",
+					{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+					`工具清单读取失败：${tools.error}`,
+				)
+			: connectedServers.length === 0
+				? h(
+						"div",
+						{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+						"没有 MCP 服务器注册工具——即当前没有连上的服务器。",
+					)
+				: connectedServers.map((server) => h(McpServerBlock, { key: server.server, server })),
+		// Configured rows the Loader carries, shown apart so a configured server with
+		// no tools is visible as exactly that.
+		inventory.error !== void 0
+			? h(
+					"div",
+					{ style: { fontSize: 11.5, opacity: 0.7, padding: "6px 0 0" } },
+					`Loader 条目读取失败：${inventory.error}`,
+				)
+			: mcpRows.length === 0
+				? null
+				: h(
+						"div",
+						null,
+						h(
+							"div",
+							{ style: { fontSize: 11, opacity: 0.6, padding: "8px 0 2px" } },
+							`已配置 ${mcpRows.length} 个客户端条目：`,
+						),
+						mcpRows.map((row) => h(McpRow, { key: row.entryId, row })),
+					),
+		// The resource plugin decides whether configured servers expose readable
+		// resources at all, so its absence is information.
+		mcpResources == null
+			? null
+			: h(
+					"div",
+					{ style: { fontSize: 11.5, opacity: 0.7, padding: "5px 0 0" } },
+					`资源工具：${mcpResources.enabled ? "已挂载" : "已禁用"}（${rowLabel(mcpResources.entryId)}）`,
+				),
+		h(
+			"div",
+			{ style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5, paddingTop: 5 } },
+			"判据是工具注册表里存在 mcp__<server>__* 工具；注册表变化不会自动推送过来，这里只在你打开明细或点刷新时重读。",
+			"连不上、或连上但被本会话的工具限制挡住，都会让这个视图里没有它的工具——所以「本会话视图里没有」不等于「服务器没连上」。",
+		),
+		// The fault dialog is the one thing this section cannot restate, and a
+		// keyboard reader who dismissed it has no way to reopen it from the row (the
+		// row is one button; the mark inside it carries a mouse-only click). A real
+		// button here gives the dialog an equivalent, reachable path.
+		fault
+			? h(
+					"div",
+					{ style: { paddingTop: 4 } },
+					h(
+						ui.Button,
+						{
+							variant: "ghost",
+							size: "sm",
+							"aria-label": "查看 MCP 故障原因",
+							onClick: onShowFault,
+						},
+						"查看故障原因",
+					),
+				)
+			: null,
+	);
+}
+
+/**
+ * One connected MCP server: its tool count, and the tools themselves.
+ * @param props - the server entry from the host's summary.
+ */
+function McpServerBlock({ server }) {
+	return h(
+		"div",
+		{ style: { padding: "3px 0" } },
+		h(
+			"div",
+			{ style: { display: "flex", alignItems: "center", gap: 6 } },
+			h(ui.IconCheckCircleOutlineRegular, {
+				size: 13,
+				style: { color: "var(--dsw-alias-state-success-primary)" },
+			}),
+			h("span", { style: { fontSize: 12, fontWeight: 600 } }, server.server),
+			h(
+				"span",
+				{ style: { marginLeft: "auto", fontSize: 11, opacity: 0.65 } },
+				`${server.tools.length} 个工具`,
+			),
+		),
+		server.tools.length > 0
+			? h(
+					"div",
+					{ style: { paddingLeft: 19, display: "flex", flexDirection: "column" } },
+					// Same row as the non-MCP list: the whole point of asking "what does
+					// the model get" includes what each tool is for.
+					// Index in the key, not just the name: an MCP tool whose raw name is
+					// empty (`mcp__srv__`) and its non-MCP twin both render as "". Since
+					// `ToolRow` owns a `useState` (the schema toggle), a duplicated key
+					// would let one row's expansion state appear on another.
+					server.tools.map((tool, index) => h(ToolRow, { key: `${index}:${tool.name}`, tool })),
+				)
+			: null,
+	);
+}
+
+/**
+ * The plugin-bundle group: the profile's enabled bundles.
+ * @param props - the payload's `bundles` block.
+ */
+function BundlesSection({ bundles }) {
+	// A failed read states its reason like the other groups; hiding the block would
+	// read as "no bundles" and defeat the panel's purpose.
+	if (bundles?.error !== void 0) {
+		return h(
+			"div",
+			null,
+			h(GroupHeading, {
+				icon: h(ui.IconCordisPluginOutlineRegular, { size: 13 }),
+				name: "插件包",
+			}),
+			h(
+				"div",
+				{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+				`pluginManager/listBundles 读取失败：${bundles.error}`,
+			),
+		);
+	}
+	const enabled = (bundles?.bundles ?? []).filter((bundle) => bundle.enabled);
+	return h(
+		"div",
+		null,
+		h(GroupHeading, {
+			icon: h(ui.IconCordisPluginOutlineRegular, { size: 13 }),
+			name: "插件包",
+			count: enabled.length,
+			note: "profile 已启用",
+		}),
+		enabled.map((bundle) =>
+			h(
+				"div",
+				{
+					key: bundle.name,
+					style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 0" },
+				},
+				h("span", { style: { fontSize: 12 } }, bundle.name),
+				h("span", { style: { marginLeft: "auto", fontSize: 11, opacity: 0.6 } }, `${bundle.version ?? "-"} · ${bundle.rows?.length ?? 0} rows`),
+			),
+		),
+	);
+}
+
+/**
+ * The non-MCP tool group: the deployment's own tools, with the arithmetic that
+ * explains why this list is shorter than the collapsed mark's total.
+ *
+ * The MCP count is passed in rather than derived by subtraction. Subtraction would
+ * present an unverified invariant as a fact: a schema whose name is empty or not a
+ * string is counted in `totalTools` but skipped by both buckets, so "the rest are
+ * MCP" would be wrong by exactly that amount.
+ * @param props - the host's `tools` block and the connected MCP servers.
+ */
+function ToolsSection({ tools, connectedServers }) {
+	const local = (tools?.local ?? []).map(asTool);
+	const failed = tools?.error !== void 0;
+	const mcpCount = connectedServers.reduce((sum, server) => sum + server.tools.length, 0);
+	const total = tools?.totalTools ?? 0;
+	const unclassified = Math.max(0, total - local.length - mcpCount);
+	const metaStyle = { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5 };
+	/** Muted explanatory lines, kept out of the children array as data. */
+	const meta = failed
+		? []
+		: [
+				// The one case that must never read as "your session's tools": a stale answer
+				// is what that agent saw when it was last alive, and a global answer is the
+				// deployment catalog because this session has no agent to answer for it.
+				...(tools !== void 0 && tools.stale === true
+					? [
+							`该会话当前没有活跃 agent。下面是它上次活跃时（${formatWhen(tools.recordedAt)}）读到的工具清单，不是现在的部署注册表。在会话里发一条消息后点刷新即可读到当前值。`,
+						]
+					: []),
+				...(tools !== void 0 && tools.stale !== true && tools.scope !== "agent"
+					? [
+							"该会话当前没有活跃 agent（重启后尚未在本进程运行过，或它已被释放），因此读不到它自己的工具视图。下面是部署级注册表，不是本会话的数字；在会话里发一条消息后点刷新即可读到。",
+						]
+					: []),
+				// Make the arithmetic visible, so "40 shown, eleven listed" cannot be read as
+				// a bug: the total is split across two sections.
+				`共 ${total} 个：下列 ${local.length} 个非 MCP` +
+					`，上方 MCP 分区 ${mcpCount} 个` +
+					(unclassified > 0 ? `，另有 ${unclassified} 个名字不可解析` : "") +
+					"。",
+				// Without this line the section over-claims: `dsh-read-img` hides
+				// `read_image` by filtering `options.tools` inside `llm/stream`, and a guard
+				// refuses residual calls — the registry still lists it, so the panel does
+				// too. Saying so beats silently looking wrong.
+				"这里是工具注册表。插件可以在请求层再次过滤（例如 dsh-read-img 会隐藏 read_image 并拒绝调用），这类过滤在此视图中看不到。",
+			];
+
+	// Three distinct states, kept apart on purpose: unreadable, read but empty, and a
+	// list. Folding the first into the second would turn our own failure into a claim
+	// about the deployment.
+	let body;
+	if (failed) {
+		body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, `工具清单读取失败：${tools.error}`);
+	} else if (tools === void 0) {
+		body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, "尚未读到工具清单。");
+	} else if (local.length === 0) {
+		body = h(
+			"div",
+			{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
+			mcpCount > 0 ? "除 MCP 工具外没有注册工具。" : "注册表里没有任何工具。",
+		);
+	} else {
+		body = h(
+			"div",
+			{ style: { display: "flex", flexDirection: "column" } },
+			local.map((tool, index) => h(ToolRow, { key: `${index}:${tool.name}`, tool })),
+		);
+	}
+
+	return h(
+		"div",
+		null,
+		h(GroupHeading, {
+			icon: h(ui.IconToolOutlineRegular, { size: 13 }),
+			name: "工具",
+			// The count must match the list right under it. Showing the grand total here
+			// is what made the row count look wrong: the MCP tools are listed in the MCP
+			// section above, so this section holds only the rest.
+			count: failed ? void 0 : local.length,
+			// The scope, stated rather than implied. It says "视图", not "可见": this reads
+			// the REGISTRY, so a plugin that filters tools out of the LLM request
+			// afterwards is not reflected here.
+			note: toolsNote(tools, failed),
+		}),
+		meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
+		body,
+	);
+}
+
+/**
+ * The skills mark: a count, or the icon that says why there is no count.
+ *
+ * A component taking plain data, not a closure over the strip's state: the three
+ * branches (unreadable / still loading / counted) are the whole contract, and a
+ * test can drive each one without mounting the strip.
+ * @param props - load phase, payload, and whether the load threw outright.
+ */
+function SkillChip({ state, payload, loadFailed, skillCount }) {
+		const skills = payload?.skills;
+		let body;
+		if (skills?.error !== void 0)
+			body = h(ui.IconUnknownOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-error-primary)" },
+			});
+		else if (loadFailed)
+			// The whole load threw; there is no skills block to read. Saying
+			// "读取失败" beats a permanent "…".
+			body = h(ui.IconUnknownOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-error-primary)" },
+			});
+		else if (skillCount === void 0) body = h("span", MUTED, "…");
+		else body = h("span", COUNT, String(skillCount));
+		return h(
+			"span",
+			{
+				style: CHIP,
+				title:
+					skills?.error !== void 0 || loadFailed
+						? state.phase === "failed" && state.error !== void 0
+							? `读取失败：${state.error}`
+							: "技能清单读取失败"
+						: "本会话可见的 skill 数量",
+				"aria-label": "技能",
+			},
+			h(ui.IconSkillOutlineRegular, { size: 12 }),
+			body,
+		);
+}
+
+/**
+ * The MCP mark: the connected-server count, or the icon naming the fault.
+ *
+ * `toolsCurrent` is what keeps this honest — a remembered or deployment-wide
+ * answer must not print a live-looking server count.
+ * @param props - load phase, payload, connected servers, and the currentness gate.
+ */
+function McpChip({
+	state,
+	payload,
+	loadFailed,
+	connected,
+	enabledMcpRows,
+	mcpFault,
+	totalMcpTools,
+	toolsCurrent,
+	mcpStateLabel,
+	onShowFault,
+}) {
+		let body;
+		if (payload === void 0)
+			body = loadFailed
+				? h(ui.IconUnknownOutlineRegular, {
+						size: 12,
+						style: { color: "var(--dsw-alias-state-error-primary)" },
+					})
+				: h("span", MUTED, "…");
+		else if (payload.tools?.error !== void 0)
+			body = h(ui.IconUnknownOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-error-primary)" },
+			});
+		// Amber question mark: this answer is not the session's current state
+		// (deployment catalog, or a remembered reading). Printing the count in
+		// green here is what made a deployment number look like this session's.
+		else if (!toolsCurrent)
+			body = h(ui.IconUnknownOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-warn-primary)" },
+			});
+		else if (connected)
+			body = h(
+				"span",
+				{ style: { ...COUNT, color: "var(--dsw-alias-state-success-primary)" } },
+				String(totalMcpTools),
+			);
+		else if (mcpFault)
+			// Red, not amber: amber reads as "not configured", red as
+			// "configured and broken".
+			body = h(ui.IconWarningOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-error-primary)" },
+			});
+		// Configured rows that registered nothing: still connecting, or masked out
+		// of this session's view by `tools.restrict()`. The strip cannot tell which,
+		// so it shows "unknown" rather than accusing the deployment of being down.
+		else if (enabledMcpRows.length > 0)
+			body = h(ui.IconUnknownOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-warn-primary)" },
+			});
+		else
+			body = h(ui.IconCloseOutlineRegular, {
+				size: 12,
+				style: { color: "var(--dsw-alias-state-warn-primary)" },
+			});
+		const label = h(
+			"span",
+			{ style: CHIP, title: `MCP：${mcpStateLabel}`, "aria-label": "MCP" },
+			h(ui.IconGlobeOutlineRegular, { size: 12 }),
+			body,
+		);
+		// A fault is the one case where the mark must be actionable: clicking it
+		// re-opens the explanation, so a reader who dismissed the dialog can get
+		// it back without hunting for it.
+		//
+		// It is a `span`, not a `<button>`, on purpose: this sits inside the row
+		// that is itself `role="button"`, and a native button inside a button-like
+		// element is invalid nesting — two tab stops for one visual row, and
+		// screen readers disagree about which one wins. The keyboard path to the
+		// dialog is the row itself (which opens the panel, whose MCP section states
+		// the fault) plus the dialog that opens by itself; this click is a mouse
+		// convenience layered on that, so it carries no role and no tab stop.
+		if (!mcpFault) return label;
+		return h(
+			"span",
+			{
+				onClick: (event) => {
+					event.stopPropagation();
+					// The handler arrives as a prop. Reaching for the strip's own
+					// `setAlertOpen` here would be a ReferenceError: this component is a
+					// top-level sibling, not a closure inside RuntimeStrip.
+					onShowFault();
+				},
+				title: "MCP 连接故障：点击查看原因",
+				style: {
+					...CHIP,
+					cursor: "pointer",
+				},
+			},
+			label,
+		);
+}
+
+/**
+ * The tools mark: this session's total, or the muted time of a past reading.
+ * @param props - load phase, payload, and the currentness gate.
+ */
+function ToolsChip({ payload, loadFailed }) {
+		const tools = payload?.tools;
+		/**
+		 * What this chip actually knows, as four distinct states.
+		 *
+		 * Collapsing them is how a wrong claim gets made: `scope` read off a missing
+		 * payload is `undefined`, which is not `"agent"`, so a naive check reports
+		 * "no active agent" before anything was asked — and a payload without a
+		 * tools block would report one too. Each state answers for itself.
+		 */
+		const chipState =
+			payload === void 0
+				? loadFailed
+					? "unreadable"
+					: "pending"
+				: tools === void 0 || tools.error !== void 0
+					? "unreadable"
+					: tools.scope !== "agent"
+						? "no-agent"
+						: tools.stale === true
+							? "stale"
+							: "ready";
+		const chipStateBody = {
+			pending: () => h("span", MUTED, "…"),
+			unreadable: () =>
+				h(ui.IconUnknownOutlineRegular, {
+					size: 12,
+					style: { color: "var(--dsw-alias-state-error-primary)" },
+				}),
+			// No live agent for this session: a mark, never the deployment's number.
+			// The panel still shows that catalog, labelled for what it is.
+			"no-agent": () =>
+				h(ui.IconUnknownOutlineRegular, {
+					size: 12,
+					style: { color: "var(--dsw-alias-state-warn-primary)" },
+				}),
+			// A remembered answer is this session's own number from when its agent was
+			// alive. Muted, so it never looks like a live reading.
+			stale: () =>
+				h(
+					"span",
+					{ ...COUNT, opacity: 0.6 },
+					String(tools?.totalTools ?? 0),
+				),
+			ready: () => h("span", COUNT, String(tools?.totalTools ?? 0)),
+		}[chipState];
+		const stateTitle = {
+			pending: "工具清单读取中",
+			unreadable: "工具清单读取失败",
+			"no-agent": "该会话暂无活跃 agent，读不到它自己的工具视图（在会话里发一条消息后即可读取）",
+			stale: `上次活跃时（${formatWhen(tools?.recordedAt)}）的工具总数：${tools?.totalTools ?? 0}；当前无活跃 agent`,
+			ready: `本会话 agent 被提供的工具总数（含 MCP）：${tools?.totalTools ?? 0}`,
+		}[chipState];
+		return h(
+			"span",
+			{ style: CHIP, title: stateTitle, "aria-label": "工具" },
+			h(ui.IconToolOutlineRegular, { size: 12 }),
+			chipStateBody(),
+		);
+}
 
 		/** Group heading: an icon, the group name, and its count. */
 		function GroupHeading({ icon, name, count, note }) {
@@ -1028,8 +1656,11 @@ function computePlacement(rect, viewport) {
 					if (inFlight.current) {
 						// Invalidate the in-flight read so its stale result is discarded,
 						// and remember the LATEST caller's options for the compensation.
+						// A caller with no options is still a caller: storing `undefined`
+						// here would make the compensation indistinguishable from "nobody
+						// asked", and the pending read would be dropped instead of run.
 						requestId.current += 1;
-						pendingOptions.current = options;
+						pendingOptions.current = options ?? {};
 						return;
 					}
 					inFlight.current = true;
@@ -1236,122 +1867,21 @@ function computePlacement(rect, viewport) {
 											? "本会话视图里没有 MCP 工具（可能未连接，也可能被本会话的工具限制挡住）"
 											: "未连接";
 
-			const renderSkillChip = () => {
-				const skills = payload?.skills;
-				let body;
-				if (skills?.error !== void 0)
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-error-primary)" },
-					});
-				else if (loadFailed)
-					// The whole load threw; there is no skills block to read. Saying
-					// "读取失败" beats a permanent "…".
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-error-primary)" },
-					});
-				else if (skillCount === void 0) body = h("span", MUTED, "…");
-				else body = h("span", COUNT, String(skillCount));
-				return h(
-					"span",
-					{
-						style: CHIP,
-						title:
-							skills?.error !== void 0 || loadFailed
-								? state.phase === "failed" && state.error !== void 0
-									? `读取失败：${state.error}`
-									: "技能清单读取失败"
-								: "本会话可见的 skill 数量",
-						"aria-label": "技能",
-					},
-					h(ui.IconSkillOutlineRegular, { size: 12 }),
-					body,
-				);
-			};
+			const renderSkillChip = () => h(SkillChip, { state, payload, loadFailed, skillCount });
 
-			const renderMcpChip = () => {
-				let body;
-				if (payload === void 0)
-					body = loadFailed
-						? h(ui.IconUnknownOutlineRegular, {
-								size: 12,
-								style: { color: "var(--dsw-alias-state-error-primary)" },
-							})
-						: h("span", MUTED, "…");
-				else if (payload.tools?.error !== void 0)
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-error-primary)" },
-					});
-				// Amber question mark: this answer is not the session's current state
-				// (deployment catalog, or a remembered reading). Printing the count in
-				// green here is what made a deployment number look like this session's.
-				else if (!toolsCurrent)
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-warn-primary)" },
-					});
-				else if (connected)
-					body = h(
-						"span",
-						{ style: { ...COUNT, color: "var(--dsw-alias-state-success-primary)" } },
-						String(totalMcpTools),
-					);
-				else if (mcpFault)
-					// Red, not amber: amber reads as "not configured", red as
-					// "configured and broken".
-					body = h(ui.IconWarningOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-error-primary)" },
-					});
-				// Configured rows that registered nothing: still connecting, or masked out
-				// of this session's view by `tools.restrict()`. The strip cannot tell which,
-				// so it shows "unknown" rather than accusing the deployment of being down.
-				else if (enabledMcpRows.length > 0)
-					body = h(ui.IconUnknownOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-warn-primary)" },
-					});
-				else
-					body = h(ui.IconCloseOutlineRegular, {
-						size: 12,
-						style: { color: "var(--dsw-alias-state-warn-primary)" },
-					});
-				const label = h(
-					"span",
-					{ style: CHIP, title: `MCP：${mcpStateLabel}`, "aria-label": "MCP" },
-					h(ui.IconGlobeOutlineRegular, { size: 12 }),
-					body,
-				);
-				// A fault is the one case where the mark must be actionable: clicking it
-				// re-opens the explanation, so a reader who dismissed the dialog can get
-				// it back without hunting for it.
-				//
-				// It is a `span`, not a `<button>`, on purpose: this sits inside the row
-				// that is itself `role="button"`, and a native button inside a button-like
-				// element is invalid nesting — two tab stops for one visual row, and
-				// screen readers disagree about which one wins. The keyboard path to the
-				// dialog is the row itself (which opens the panel, whose MCP section states
-				// the fault) plus the dialog that opens by itself; this click is a mouse
-				// convenience layered on that, so it carries no role and no tab stop.
-				if (!mcpFault) return label;
-				return h(
-					"span",
-					{
-						onClick: (event) => {
-							event.stopPropagation();
-							setAlertOpen(true);
-						},
-						title: "MCP 连接故障：点击查看原因",
-						style: {
-							...CHIP,
-							cursor: "pointer",
-						},
-					},
-					label,
-				);
-			};
+			const renderMcpChip = () =>
+				h(McpChip, {
+					state,
+					payload,
+					loadFailed,
+					connected,
+					enabledMcpRows,
+					mcpFault,
+					totalMcpTools,
+					toolsCurrent,
+					mcpStateLabel,
+					onShowFault: () => setAlertOpen(true),
+				});
 
 			// The third mark: how many tools this session's model is offered.
 			//
@@ -1362,347 +1892,34 @@ function computePlacement(rect, viewport) {
 			// the deployment catalog, and that number is NOT this session's tool view.
 			// Printing it here is what made the strip look like it ignored the session,
 			// so a global answer renders as "unreadable", never as a count.
-			const renderToolsChip = () => {
-				const tools = payload?.tools;
-				/**
-				 * What this chip actually knows, as four distinct states.
-				 *
-				 * Collapsing them is how a wrong claim gets made: `scope` read off a missing
-				 * payload is `undefined`, which is not `"agent"`, so a naive check reports
-				 * "no active agent" before anything was asked — and a payload without a
-				 * tools block would report one too. Each state answers for itself.
-				 */
-				const state =
-					payload === void 0
-						? loadFailed
-							? "unreadable"
-							: "pending"
-						: tools === void 0 || tools.error !== void 0
-							? "unreadable"
-							: tools.scope !== "agent"
-								? "no-agent"
-								: tools.stale === true
-									? "stale"
-									: "ready";
-				const stateBody = {
-					pending: () => h("span", MUTED, "…"),
-					unreadable: () =>
-						h(ui.IconUnknownOutlineRegular, {
-							size: 12,
-							style: { color: "var(--dsw-alias-state-error-primary)" },
-						}),
-					// No live agent for this session: a mark, never the deployment's number.
-					// The panel still shows that catalog, labelled for what it is.
-					"no-agent": () =>
-						h(ui.IconUnknownOutlineRegular, {
-							size: 12,
-							style: { color: "var(--dsw-alias-state-warn-primary)" },
-						}),
-					// A remembered answer is this session's own number from when its agent was
-					// alive. Muted, so it never looks like a live reading.
-					stale: () =>
-						h(
-							"span",
-							{ ...COUNT, opacity: 0.6 },
-							String(tools?.totalTools ?? 0),
-						),
-					ready: () => h("span", COUNT, String(tools?.totalTools ?? 0)),
-				}[state];
-				const stateTitle = {
-					pending: "工具清单读取中",
-					unreadable: "工具清单读取失败",
-					"no-agent": "该会话暂无活跃 agent，读不到它自己的工具视图（在会话里发一条消息后即可读取）",
-					stale: `上次活跃时（${formatWhen(tools?.recordedAt)}）的工具总数：${tools?.totalTools ?? 0}；当前无活跃 agent`,
-					ready: `本会话 agent 被提供的工具总数（含 MCP）：${tools?.totalTools ?? 0}`,
-				}[state];
-				return h(
-					"span",
-					{ style: CHIP, title: stateTitle, "aria-label": "工具" },
-					h(ui.IconToolOutlineRegular, { size: 12 }),
-					stateBody(),
-				);
-			};
+			const renderToolsChip = () => h(ToolsChip, { payload, loadFailed });
 
-			const toolsSection = (() => {
-				if (!open || payload === void 0) return null;
-				const tools = payload.tools;
-				const local = (tools?.local ?? []).map(asTool);
-				const failed = tools?.error !== void 0;
-				// The MCP count comes from the servers themselves, not from subtracting the
-				// local count from the total. Subtraction would present an unverified
-				// invariant as a fact: a schema whose name is empty or not a string is
-				// counted in `totalTools` (schemas.length) but skipped by both buckets, so
-				// "the rest are MCP" would be wrong by exactly that amount.
-				const mcpCount = connectedServers.reduce((sum, server) => sum + server.tools.length, 0);
-				const total = tools?.totalTools ?? 0;
-				const unclassified = Math.max(0, total - local.length - mcpCount);
+			// Tools first: it is the group the collapsed mark counts.
+			const toolsSection =
+				open && payload !== void 0
+					? h(ToolsSection, { tools: payload.tools, connectedServers })
+					: null;
 
-				const metaStyle = { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5 };
-				/** Muted explanatory lines, kept out of the children array as data. */
-				const meta = failed
-					? []
-					: [
-							// The one case that must never read as "your session's tools": a global
-							// answer is the deployment catalog, because this session has no agent to
-							// answer for it. Say why, and say what makes it available.
-							...(tools !== void 0 && tools.stale === true
-								? [
-										`该会话当前没有活跃 agent。下面是它上次活跃时（${formatWhen(tools.recordedAt)}）读到的工具清单，不是现在的部署注册表。在会话里发一条消息后点刷新即可读到当前值。`,
-									]
-								: []),
-							...(tools !== void 0 && tools.scope !== "agent"
-								? [
-										"该会话当前没有活跃 agent（重启后尚未在本进程运行过，或它已被释放），因此读不到它自己的工具视图。下面是部署级注册表，不是本会话的数字；在会话里发一条消息后点刷新即可读到。",
-									]
-								: []),
-							// Make the arithmetic visible, so "40 shown, eleven listed" cannot be
-							// read as a bug: the total is split across two sections.
-							`共 ${total} 个：下列 ${local.length} 个非 MCP` +
-								`，上方 MCP 分区 ${mcpCount} 个` +
-								(unclassified > 0 ? `，另有 ${unclassified} 个名字不可解析` : "") +
-								"。",
-							// Without this line the section over-claims: `dsh-read-img` hides
-							// `read_image` by filtering `options.tools` inside `llm/stream`, and
-							// a guard refuses residual calls — the registry still lists it, so
-							// the panel does too. Saying so beats silently looking wrong.
-							"这里是工具注册表。插件可以在请求层再次过滤（例如 dsh-read-img 会隐藏 read_image 并拒绝调用），这类过滤在此视图中看不到。",
-						];
+			// Skills: the only group whose count the strip also shows collapsed.
+			const skillsSection = open && payload !== void 0 ? h(SkillsSection, { skills: payload.skills }) : null;
 
-				// Three distinct states, kept apart on purpose: unreadable, read but empty,
-				// and a list. Folding the first into the second would turn our own failure
-				// into a claim about the deployment.
-				let body;
-				if (failed) {
-					body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, `工具清单读取失败：${tools.error}`);
-				} else if (tools === void 0) {
-					body = h("div", { style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } }, "尚未读到工具清单。");
-				} else if (local.length === 0) {
-					body = h(
-						"div",
-						{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-						mcpCount > 0 ? "除 MCP 工具外没有注册工具。" : "注册表里没有任何工具。",
-					);
-				} else {
-					body = h(
-						"div",
-						{ style: { display: "flex", flexDirection: "column" } },
-						local.map((tool) => h(ToolRow, { key: tool.name, tool })),
-					);
-				}
+			// MCP: connected servers, then the Loader rows behind them.
+			const mcpSection =
+				open && payload !== void 0
+					? h(McpSection, {
+							tools: payload.tools,
+							inventory: payload.inventory,
+							mcpResources: payload.mcpResources,
+							mcpRows,
+							connectedServers,
+							stateLabel: mcpStateLabel,
+							fault: mcpFault,
+							onShowFault: () => setAlertOpen(true),
+						})
+					: null;
 
-				return h(
-					"div",
-					null,
-					h(GroupHeading, {
-						icon: h(ui.IconToolOutlineRegular, { size: 13 }),
-						name: "工具",
-						// The count must match the list right under it. Showing the grand total
-						// here is what made the row count look wrong: the MCP tools are listed
-						// in the MCP section above, so this section holds only the rest.
-						count: failed ? void 0 : local.length,
-						// The scope, stated rather than implied. It says "视图", not "可见":
-						// this reads the REGISTRY, so a plugin that filters tools out of the
-						// LLM request afterwards is not reflected here.
-						note: toolsNote(tools, failed),
-					}),
-					meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
-					body,
-				);
-			})();
-
-			const skillsSection = (() => {
-				// Collapsed, these trees are never mounted, and the dock re-renders on
-				// every composer keystroke: skip the work instead of building it unused.
-				if (!open || payload === void 0) return null;
-				const { skills } = payload;
-				return h(
-					"div",
-					null,
-					h(GroupHeading, {
-						icon: h(ui.IconSkillOutlineRegular, { size: 13 }),
-						name: "技能",
-						count: skills.entries?.length,
-						note: "本会话可见",
-					}),
-					skills.error !== void 0
-						? h(
-								"div",
-								{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-								`skills/list 读取失败：${skills.error}`,
-							)
-						: (skills.entries?.length ?? 0) === 0
-							? h(
-									"div",
-									{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-									"该会话没有可见技能。",
-								)
-							: skills.entries.map((entry) =>
-									h(SkillRow, { key: `${entry.name}:${entry.path ?? ""}`, entry }),
-								),
-				);
-			})();
-
-			const mcpSection = (() => {
-				// Collapsed, these trees are never mounted, and the dock re-renders on
-				// every composer keystroke: skip the work instead of building it unused.
-				if (!open || payload === void 0) return null;
-				const { inventory, tools } = payload;
-				return h(
-					"div",
-					null,
-					h(GroupHeading, {
-						icon: h(ui.IconGlobeOutlineRegular, { size: 13 }),
-						name: "MCP",
-						count: connectedServers.length,
-						// The words the collapsed mark no longer prints: this heading is
-						// where "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
-						note: mcpStateLabel,
-					}),
-					// The connected list is the answer to "does it actually work":
-					// these servers have tools registered in the live registry.
-					tools.error !== void 0
-						? h(
-								"div",
-								{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-								`工具清单读取失败：${tools.error}`,
-							)
-						: connectedServers.length === 0
-							? h(
-									"div",
-									{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-									"没有 MCP 服务器注册工具——即当前没有连上的服务器。",
-								)
-							: connectedServers.map((server) =>
-									h(
-										"div",
-										{ key: server.server, style: { padding: "3px 0" } },
-										h(
-											"div",
-											{ style: { display: "flex", alignItems: "center", gap: 6 } },
-											h(ui.IconCheckCircleOutlineRegular, {
-												size: 13,
-												style: { color: "var(--dsw-alias-state-success-primary)" },
-											}),
-											h("span", { style: { fontSize: 12, fontWeight: 600 } }, server.server),
-											h(
-												"span",
-												{ style: { marginLeft: "auto", fontSize: 11, opacity: 0.65 } },
-												`${server.tools.length} 个工具`,
-											),
-										),
-										server.tools.length > 0
-											? h(
-													"div",
-													{ style: { paddingLeft: 19, display: "flex", flexDirection: "column" } },
-													// Same row as the non-MCP list: the whole point of asking
-													// "what does the model get" includes what each tool is for.
-													server.tools.map((tool) => h(ToolRow, { key: tool.name, tool })),
-												)
-											: null,
-									),
-								),
-					// Configured rows the Loader carries, shown apart so a configured
-					// server with no tools is visible as exactly that.
-					inventory.error !== void 0
-						? h(
-								"div",
-								{ style: { fontSize: 11.5, opacity: 0.7, padding: "6px 0 0" } },
-								`Loader 条目读取失败：${inventory.error}`,
-							)
-						: mcpRows.length === 0
-							? null
-							: h(
-									"div",
-									null,
-									h(
-										"div",
-										{ style: { fontSize: 11, opacity: 0.6, padding: "8px 0 2px" } },
-										`已配置 ${mcpRows.length} 个客户端条目：`,
-									),
-									mcpRows.map((row) => h(McpRow, { key: row.entryId, row })),
-								),
-					// The resource plugin decides whether configured servers expose
-					// readable resources at all, so its absence is information.
-					payload.mcpResources == null
-						? null
-						: h(
-								"div",
-								{ style: { fontSize: 11.5, opacity: 0.7, padding: "5px 0 0" } },
-								`资源工具：${payload.mcpResources?.enabled ? "已挂载" : "已禁用"}（${rowLabel(payload.mcpResources?.entryId)}）`,
-							),
-					h(
-						"div",
-						{ style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5, paddingTop: 5 } },
-						"判据是工具注册表里存在 mcp__<server>__* 工具；注册表变化不会自动推送过来，这里只在你打开明细或点刷新时重读。",
-						"连不上、或连上但被本会话的工具限制挡住，都会让这个视图里没有它的工具——所以「本会话视图里没有」不等于「服务器没连上」。",
-					),
-					// The fault dialog is the one thing this section cannot restate, and a
-					// keyboard reader who dismissed it has no way to reopen it from the row
-					// (the row is one button; the mark inside it carries a mouse-only click).
-					// A real button here gives the dialog an equivalent, reachable path.
-					mcpFault
-						? h(
-								"div",
-								{ style: { paddingTop: 4 } },
-								h(
-									ui.Button,
-									{
-										variant: "ghost",
-										size: "sm",
-										"aria-label": "查看 MCP 故障原因",
-										onClick: () => setAlertOpen(true),
-									},
-									"查看故障原因",
-								),
-							)
-						: null,
-				);
-			})();
-
-			const bundlesSection = (() => {
-				// Collapsed, these trees are never mounted, and the dock re-renders on
-				// every composer keystroke: skip the work instead of building it unused.
-				if (!open || payload === void 0) return null;
-				// A failed read states its reason like the other two groups; hiding the
-				// block would read as "no bundles" and defeat the panel's purpose.
-				if (payload.bundles?.error !== void 0) {
-					return h(
-						"div",
-						null,
-						h(GroupHeading, {
-							icon: h(ui.IconCordisPluginOutlineRegular, { size: 13 }),
-							name: "插件包",
-						}),
-						h(
-							"div",
-							{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-							`pluginManager/listBundles 读取失败：${payload.bundles?.error}`,
-						),
-					);
-				}
-				const enabled = (payload.bundles?.bundles ?? []).filter((bundle) => bundle.enabled);
-				return h(
-					"div",
-					null,
-					h(GroupHeading, {
-						icon: h(ui.IconCordisPluginOutlineRegular, { size: 13 }),
-						name: "插件包",
-						count: enabled.length,
-						note: "profile 已启用",
-					}),
-					enabled.map((bundle) =>
-						h(
-							"div",
-							{
-								key: bundle.name,
-								style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 0" },
-							},
-							h("span", { style: { fontSize: 12 } }, bundle.name),
-							h("span", { style: { marginLeft: "auto", fontSize: 11, opacity: 0.6 } }, `${bundle.version ?? "-"} · ${bundle.rows?.length ?? 0} rows`),
-						),
-					),
-				);
-			})();
+			// Bundles last: it is context, not a capability the model is offered.
+			const bundlesSection = open && payload !== void 0 ? h(BundlesSection, { bundles: payload.bundles }) : null;
 
 			/**
 			 * Open or close the detail panel.

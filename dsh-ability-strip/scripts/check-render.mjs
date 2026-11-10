@@ -1136,6 +1136,128 @@ const transitionProps = {
 	);
 }
 
+
+// --- The fault mark must be clickable, and clicking must not throw ---------
+// The mark is the only control in the collapsed row, and its handler arrives as a
+// prop: this component is a top-level sibling of the strip, not a closure inside
+// it. A handler that reaches for the strip's own `setAlertOpen` compiles fine and
+// throws only when a reader clicks — so the click has to actually be performed.
+{
+	const faultPayload = {
+		...payloadOk,
+		tools: { ...payloadOk.tools, servers: [], totalTools: 3, scope: "agent" },
+		mcpRows: [{ ...mcpEntry, fiberPhase: "active", enabled: true }],
+	};
+	const faultProps = { sessionId: "s-fault-click", load: async () => faultPayload };
+	mount(faultProps);
+	await settle();
+	await flush();
+	const faultTree = render(faultProps);
+	check(
+		(markTitle(faultTree, "MCP") ?? "").includes("连接故障"),
+		`a configured server with no tools must raise a fault, saw ${JSON.stringify(markTitle(faultTree, "MCP"))}`,
+	);
+	// The dialog opens by itself the first time the fault is observed, so close it
+	// first: the click path being tested is the one a reader takes AFTER dismissing
+	// it, which is the only reason the mark carries a handler at all.
+	const dismiss = collectElements(faultTree).find((node) => {
+		const label = node?.props?.["aria-label"];
+		return typeof node?.props?.onClick === "function" && typeof label === "string" && label.includes("关闭");
+	});
+	if (dismiss !== undefined) {
+		dismiss.props.onClick({ stopPropagation() {}, preventDefault() {} });
+		await flush();
+	}
+	check(findDialog(render(faultProps)) === undefined, "the fault dialog must be dismissible before the click test");
+
+	// Find the element that carries the fault click handler. It is the OUTERMOST
+	// span wrapping the MCP mark — not the row, whose handler opens the panel.
+	const clickable = collectElements(render(faultProps)).find(
+		(node) =>
+			typeof node?.props?.onClick === "function" &&
+			node?.type === "span" &&
+			typeof node?.props?.title === "string" &&
+			node.props.title.includes("MCP 连接故障"),
+	);
+	check(clickable !== undefined, "the fault mark must carry a click handler");
+	if (clickable !== undefined) {
+		let thrown;
+		try {
+			clickable.props.onClick({ stopPropagation() {}, preventDefault() {} });
+		} catch (error) {
+			thrown = error;
+		}
+		check(
+			thrown === void 0,
+			`clicking the fault mark must not throw, saw ${thrown?.message}`,
+		);
+		// And it must actually open the explanation, not merely not throw.
+		await flush();
+		const afterClick = render(faultProps);
+		const reopened = findDialog(afterClick);
+		check(
+			reopened !== undefined,
+			"clicking the fault mark must open the fault dialog, saw " +
+				JSON.stringify(collectElements(afterClick).filter((n) => n?.props?.role === "dialog").map((n) => n.props["aria-label"])),
+		);
+	}
+}
+
+// --- A failed skills read must not report a count of zero ------------------
+// "Could not read" and "there are none" are different claims. The section body
+// states which one it is; a badge reading 0 would turn our own failure into a
+// fact about the session.
+{
+	const failedSkillsProps = {
+		sessionId: "s-skills-failed",
+		load: async () => ({ ...payloadOk, skills: { error: "boom" } }),
+	};
+	mount(failedSkillsProps);
+	await settle();
+	await flush();
+	const opener = findButton(render(failedSkillsProps), "明细");
+	opener?.props?.onClick?.();
+	await flush();
+	const tree = render(failedSkillsProps);
+	const text = textOf(tree);
+	check(has(text, "skills/list 读取失败"), "the failed read must state its reason");
+	// The heading badge is a Tag carrying the count; with no count there is no Tag.
+	const heading = collectElements(tree).find((node) =>
+		collectElements(node).some((inner) => inner === "技能"),
+	);
+	const badges = collectElements(heading).filter((node) => node?.type === ui.Tag);
+	check(
+		badges.length === 0,
+		`a failed skills read must not print a count badge, saw ${JSON.stringify(badges.map((b) => textOf(b)))}`,
+	);
+}
+
+// --- An unmeasurable schema must say so, not look free ---------------------
+// The host reports -1 when a schema cannot be serialized. Rendering nothing there
+// would tell the reader the tool costs nothing, which is the opposite of true.
+{
+	const unknownProps = {
+		sessionId: "s-schema-unknown",
+		load: async () => ({
+			...payloadOk,
+			tools: {
+				...payloadOk.tools,
+				local: [{ name: "weird", description: "d", schemaChars: -1 }],
+			},
+		}),
+	};
+	mount(unknownProps);
+	await settle();
+	await flush();
+	const opener = findButton(render(unknownProps), "明细");
+	opener?.props?.onClick?.();
+	await flush();
+	check(
+		has(textOf(render(unknownProps)), "参数体量未知"),
+		"an unmeasurable schema must be labelled, not silently omitted",
+	);
+}
+
 // --- No markdown leaks into the rendered text ------------------------------
 // Panel copy is a plain JS string, not markdown: `**bold**` would print its
 // asterisks to the reader. A reader hit exactly that, so it is pinned here.
@@ -1369,6 +1491,62 @@ const chipTextOf = (props) => textOf(findByLabel(render(props), "MCP") ?? []).jo
 	check(
 		chipTitleOf(staleMcpProps).includes("上次活跃时"),
 		"a remembered MCP answer must say it is a past reading",
+	);
+}
+
+// --- A tool row shows its parameter size, and can expand the schema ---------
+// The size is the number that decides whether a tool is worth its context cost, so
+// it must be visible without expanding anything. The schema itself stays collapsed
+// (a list of raw JSON is unreadable as a list) and expands on demand.
+const schemaPayload = {
+	...payloadOk,
+	tools: {
+		...payloadOk.tools,
+		local: [
+			{
+				name: "bash",
+				description: "Run a shell command",
+				schema: JSON.stringify({ type: "object", properties: { command: { type: "string" } } }),
+				schemaChars: 62,
+			},
+			{ name: "read", description: "Read a file", schemaChars: 0 },
+		],
+	},
+};
+const schemaProps = { sessionId: "s-schema", load: async () => schemaPayload };
+{
+	mount(schemaProps);
+	await settle();
+	const opener = findButton(render(schemaProps), "明细");
+	if (opener) opener.props.onClick();
+	await flush();
+	const tree = render(schemaProps);
+	const text = textOf(tree);
+	// The size is on the row, without expanding anything.
+	check(
+		text.some((t) => typeof t === "string" && t.includes("62 字符参数")),
+		`a tool row must show its parameter size, saw ${JSON.stringify(text.filter((t) => typeof t === "string" && t.includes("字符")))} `,
+	);
+	// A tool with no parameters shows no size and no expand control.
+	check(!text.some((t) => typeof t === "string" && t.includes("无参数")), "a zero-size tool must not print a size");
+	// Collapsed by default: the schema text is not in the tree yet.
+	check(
+		!text.some((t) => typeof t === "string" && t.includes('"command"')),
+		"the schema must be collapsed by default",
+	);
+	// Expand it.
+	const expand = findButton(tree, "▸ 展开参数");
+	check(expand !== undefined, "a tool with a schema must offer an expand control");
+	if (expand) expand.props.onClick();
+	await flush();
+	const expandedText = textOf(render(schemaProps));
+	check(
+		expandedText.some((t) => typeof t === "string" && t.includes('"command"')),
+		"expanding must reveal the parameter schema",
+	);
+	check(
+		expandedText.some((t) => typeof t === "string" && t.includes("收起参数")),
+		"the control must flip to a collapse label",
 	);
 }
 
