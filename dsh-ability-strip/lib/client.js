@@ -1218,7 +1218,11 @@ function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers,
 			count: shownServers.length,
 			// The words the collapsed mark no longer prints: this heading is where
 			// "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
-			note: stateLabel,
+			//
+			// Under an active query, `stateLabel` still names the UNFILTERED total
+			// ("28 个工具"). Putting that next to a list showing one tool is the same
+			// dishonesty as the arithmetic line had: say the list is filtered instead.
+			note: searchActive ? `按「${query.trim()}」筛选` : stateLabel,
 		}),
 		// The connected list is the answer to "does it actually work": these servers
 		// have tools registered in the live registry.
