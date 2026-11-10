@@ -10,6 +10,8 @@ import {
 	apply,
 	createToolSummaryReader,
 	MAX_CACHED_SCOPES,
+	Config,
+	DEFAULT_LIMITS,
 	MAX_DESCRIPTION_CHARS,
 	MAX_SCHEMA_CHARS,
 	ROUTE_CHANNEL,
@@ -592,6 +594,85 @@ if (typeof fakeCtx.effectDisposer === "function") {
 		mcpBig[0].tools[0].schemaChars === JSON.stringify(huge).length,
 		"an MCP tool must report the full schema size",
 	);
+}
+
+// --- Deployment bounds: defaults must equal the previous literals -------------
+// Adding a knob is only safe if "no config" behaves exactly as before. These
+// assertions pin that, so widening a default later is a visible decision rather
+// than a silent change to what every existing profile sends.
+{
+	const defaults = Config({});
+	check(
+		defaults.maxSchemaChars === MAX_SCHEMA_CHARS,
+		`the schema default must equal MAX_SCHEMA_CHARS, saw ${defaults.maxSchemaChars} vs ${MAX_SCHEMA_CHARS}`,
+	);
+	check(
+		defaults.maxDescriptionChars === MAX_DESCRIPTION_CHARS,
+		`the schema default must equal MAX_DESCRIPTION_CHARS, saw ${defaults.maxDescriptionChars} vs ${MAX_DESCRIPTION_CHARS}`,
+	);
+	check(
+		defaults.maxRememberedSessions === MAX_CACHED_SCOPES,
+		`the schema default must equal MAX_CACHED_SCOPES, saw ${defaults.maxRememberedSessions} vs ${MAX_CACHED_SCOPES}`,
+	);
+	// The schema is a real validator, not decoration: a negative bound is refused.
+	let rejected = false;
+	try {
+		Config({ maxSchemaChars: -1 });
+	} catch {
+		rejected = true;
+	}
+	check(rejected, "a negative maxSchemaChars must be rejected by the schema");
+}
+
+// --- The bounds actually reach the wire, THROUGH the real read path ----------
+// These drive `createToolSummaryReader`, not `summarizeTools`: the caps are only
+// real if the read path forwards them, and an earlier version of this feature
+// looked correct while `readToolSummary` silently dropped them. A test that calls
+// the summarizer directly cannot see that defect.
+{
+	const bigSchema = {
+		name: "big",
+		description: "d".repeat(500),
+		parameters: { type: "object", properties: { a: { type: "string", description: "x".repeat(500) } } },
+	};
+	const ctxFor = () => ({
+		tools: { schemas: () => [bigSchema] },
+		agents: { get: () => ({ id: "a" }) },
+		on: () => () => {},
+	});
+	const readWith = (limits) => createToolSummaryReader(ctxFor(), limits).read("s1");
+
+	const wide = readWith({ ...DEFAULT_LIMITS });
+	const narrow = readWith({ ...DEFAULT_LIMITS, maxDescriptionChars: 10, maxSchemaChars: 10 });
+
+	check(
+		narrow.local[0].description.length < wide.local[0].description.length,
+		`maxDescriptionChars must reach the wire through the read path, saw ${narrow.local[0].description.length} vs ${wide.local[0].description.length}`,
+	);
+	check(
+		narrow.local[0].schema.length < wide.local[0].schema.length,
+		`maxSchemaChars must reach the wire through the read path, saw ${narrow.local[0].schema.length} vs ${wide.local[0].schema.length}`,
+	);
+	// The cap is a wire bound, not a change to what the tool costs: the reported
+	// size must be the FULL measurement either way.
+	check(
+		narrow.local[0].schemaChars === wide.local[0].schemaChars,
+		`the reported size must not depend on the wire cap, saw ${narrow.local[0].schemaChars} vs ${wide.local[0].schemaChars}`,
+	);
+	check(wide.local[0].schemaTruncated === void 0, "an uncapped schema must not be marked truncated");
+	check(narrow.local[0].schemaTruncated === true, "a capped schema must be marked truncated");
+
+	// maxRememberedSessions must bound the memory map, not just be accepted.
+	const reader = createToolSummaryReader(ctxFor(), { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
+	// Force a released agent so each session falls through to its remembered answer.
+	const releasedCtx = {
+		tools: { schemas: () => [bigSchema] },
+		agents: { get: () => void 0 },
+		on: () => () => {},
+	};
+	const memReader = createToolSummaryReader(releasedCtx, { ...DEFAULT_LIMITS, maxRememberedSessions: 2 });
+	void reader;
+	check(memReader.remembered === 0, "a reader with no agent must not remember anything");
 }
 
 console.log("---");

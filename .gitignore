@@ -3,3 +3,4 @@ dist/
 profile-backups/
 *.tgz
 *.broken
+pnpm-lock.yaml

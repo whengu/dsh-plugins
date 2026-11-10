@@ -1,9 +1,29 @@
-# The dsh-ability-strip bundle patch: one inert Host row.
+# The dsh-ability-strip bundle patch: one Host row plus one browser bundle.
 #
-# The Host row exists only so the Loader carries this package and the client
-# module system composes its `dsh.client` browser bundle into the boot graph.
-# All behaviour lives in the browser half (lib/client.js); lib/index.js is an
-# empty `apply` on purpose.
+# The Host row (lib/index.js) is NOT inert: it answers the one question the
+# browser cannot answer on its own. The browser can read the skill catalog and
+# the Loader inventory through Remotes, but it has no access to the tool
+# registry — and whether `mcp__<server>__*` tools are registered is the only
+# browser-visible evidence that an MCP server actually connected. The Host half
+# reads `ctx.tools.schemas(agent)` and serves the summary on
+# `/api/ability-strip`.
+#
+# The browser half (lib/client.js) renders the strip; it is discovered from
+# package.json `exports["./client"]` + `dsh.client` and needs no row here.
+#
+# Optional deployment knobs (all default to the values this plugin shipped with,
+# so omitting them changes nothing):
+#
+#   - id: ability-strip
+#     name: 'dsh-ability-strip'
+#     config:
+#       maxSchemaChars: 6000        # parameter-schema characters sent per tool
+#       maxDescriptionChars: 400    # description characters sent per tool
+#       maxRememberedSessions: 8    # how many sessions' past answers to keep
+#
+# Only detail bounds are configurable. Nothing here can change WHAT is reported:
+# a knob that made the strip report a different number would make the number
+# untrustworthy.
 - insert:
     - id: ability-strip
       name: 'dsh-ability-strip'

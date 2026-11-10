@@ -1,6 +1,6 @@
 {
   "name": "dsh-ability-strip",
-  "version": "0.12.1",
+  "version": "0.13.1",
   "private": true,
   "description": "A read-only strip docked under the composer in the dsh Web GUI: how many skills this session sees, and whether any MCP server actually connected (tools registered), served by its own host half.",
   "type": "module",
@@ -10,6 +10,9 @@
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0"
   },
   "engines": {
     "dsh": ">=0.2.0-rc.2"
@@ -36,6 +39,7 @@
     "scripts/check-host.mjs",
     "scripts/check-bundle-contract.mjs",
     "scripts/check-render.mjs",
+    "scripts/check-equivalence.mjs",
     "scripts/verify-pack.mjs"
   ]
 }

@@ -47,6 +47,8 @@
  * @module dsh-ability-strip
  */
 
+import z from "@deepseek-ai/schemastery";
+
 /** Stable plugin id for the Loader row. */
 export const name = "ability-strip";
 
@@ -56,6 +58,56 @@ export const name = "ability-strip";
  * behind real availability instead of failing on first use.
  */
 export const inject = ["connection", "tools"];
+
+/**
+ * How many viewing scopes keep a cached answer, and how many remember their last
+ * agent answer. Both are bounded so a long-lived Host serving many sessions cannot
+ * accumulate catalogs without limit.
+ */
+export const MAX_CACHED_SCOPES = 8;
+
+/**
+ * Longest parameter schema carried to the browser, in characters.
+ *
+ * The panel shows a tool's `parameters` because that is the part that actually
+ * costs context on every request — a name and a description are noise next to a
+ * nested object schema. It is capped for the same reason the description is: one
+ * pathological schema must not turn a panel read into a megabyte. A cut schema is
+ * reported as `schemaTruncated`, so the panel can say "this is a preview" instead
+ * of silently showing half a JSON document.
+ */
+export const MAX_SCHEMA_CHARS = 6000;
+
+/**
+ * Longest description carried to the browser, exclusive of the ellipsis.
+ *
+ * The catalog is the only place a tool's own words exist, and the panel shows them
+ * next to the name — that is the answer to "what is this tool actually for". The
+ * cap is a wire bound, not a judgement: a pathological description cannot turn one
+ * panel read into a megabyte. A cut description keeps `MAX_DESCRIPTION_CHARS`
+ * characters **plus** the `…` marker, so the marker is never what got trimmed off.
+ */
+export const MAX_DESCRIPTION_CHARS = 400;
+
+/**
+ * Deployment knobs. Every one of these is a bound this half already enforced as a
+ * literal; exposing them turns "I wish the panel showed the whole schema" into a
+ * config edit instead of a fork, and makes the values visible in `cordis.patch.yml`
+ * where an operator is already looking.
+ *
+ * Deliberately absent: anything that would change WHAT is reported. The strip's
+ * job is to state what the registry holds, and a knob that let it report something
+ * else would make the number untrustworthy. These only widen or narrow how much
+ * detail travels, and how long an answer is kept.
+ */
+export const Config = z.object({
+	/** Longest parameter schema sent to the browser; a longer one is previewed. */
+	maxSchemaChars: z.number().step(1).min(0).default(MAX_SCHEMA_CHARS),
+	/** Longest tool description sent to the browser; a longer one is truncated. */
+	maxDescriptionChars: z.number().step(1).min(0).default(MAX_DESCRIPTION_CHARS),
+	/** How many sessions' remembered answers may be held at once. */
+	maxRememberedSessions: z.number().step(1).min(1).default(MAX_CACHED_SCOPES),
+});
 
 /** Carrier channel: the shared `/api` route the Connection mounts itself. */
 export const ROUTE_CHANNEL = "/api";
@@ -95,29 +147,22 @@ export function splitMcpToolName(toolName) {
 	return { server, tool };
 }
 
-
 /**
- * Longest parameter schema carried to the browser, in characters.
+ * The bounds in force when the deployment says nothing.
  *
- * The panel shows a tool's `parameters` because that is the part that actually
- * costs context on every request — a name and a description are noise next to a
- * nested object schema. It is capped for the same reason the description is: one
- * pathological schema must not turn a panel read into a megabyte. A cut schema is
- * reported as `schemaTruncated`, so the panel can say "this is a preview" instead
- * of silently showing half a JSON document.
- */
-export const MAX_SCHEMA_CHARS = 6000;
-
-/**
- * Longest description carried to the browser, exclusive of the ellipsis.
+ * One object rather than three separate constants: these travel together through
+ * `toolEntry` and both summarizers, and a call site that had to name them one by
+ * one would eventually pass two out of three.
  *
- * The catalog is the only place a tool's own words exist, and the panel shows them
- * next to the name — that is the answer to "what is this tool actually for". The
- * cap is a wire bound, not a judgement: a pathological description cannot turn one
- * panel read into a megabyte. A cut description keeps `MAX_DESCRIPTION_CHARS`
- * characters **plus** the `…` marker, so the marker is never what got trimmed off.
+ * `maxRememberedSessions` is declared here even though only the reader uses it, so
+ * that every limit has exactly one default and a caller never has to know which
+ * fields are optional.
  */
-export const MAX_DESCRIPTION_CHARS = 400;
+export const DEFAULT_LIMITS = Object.freeze({
+	maxDescriptionChars: MAX_DESCRIPTION_CHARS,
+	maxSchemaChars: MAX_SCHEMA_CHARS,
+	maxRememberedSessions: MAX_CACHED_SCOPES,
+});
 
 /**
  * One tool as the panel needs it: name, its own description, its parameter schema,
@@ -129,10 +174,12 @@ export const MAX_DESCRIPTION_CHARS = 400;
  * @param schema - the schema that carried it.
  * @returns the entry, with description and schema capped for the wire.
  */
-function toolEntry(name, schema) {
+function toolEntry(name, schema, limits = DEFAULT_LIMITS) {
 	const raw = typeof schema?.description === "string" ? schema.description.trim() : "";
 	const description =
-		raw.length > MAX_DESCRIPTION_CHARS ? `${raw.slice(0, MAX_DESCRIPTION_CHARS)}…` : raw;
+		raw.length > limits.maxDescriptionChars
+			? `${raw.slice(0, limits.maxDescriptionChars)}…`
+			: raw;
 	// `parameters` is a JSON-Schema object; serializing it is the only honest way to
 	// size it. A tool without parameters still costs something (an empty object), so
 	// the measurement is of what would actually be sent.
@@ -146,12 +193,12 @@ function toolEntry(name, schema) {
 		// unknown rather than guessing a number.
 		schemaChars = -1;
 	}
-	const schemaTruncated = schemaChars > MAX_SCHEMA_CHARS;
+	const schemaTruncated = schemaChars > limits.maxSchemaChars;
 	return {
 		name,
 		description,
 		schemaChars,
-		...(schemaText === "" ? {} : { schema: schemaTruncated ? `${schemaText.slice(0, MAX_SCHEMA_CHARS)}…` : schemaText }),
+		...(schemaText === "" ? {} : { schema: schemaTruncated ? `${schemaText.slice(0, limits.maxSchemaChars)}…` : schemaText }),
 		...(schemaTruncated ? { schemaTruncated: true } : {}),
 	};
 }
@@ -170,7 +217,7 @@ function toolEntry(name, schema) {
  * @returns one entry per server that has a registered tool, each tool carrying its
  * description; servers sorted by name, tools sorted by name.
  */
-export function summarizeMcpTools(schemas) {
+export function summarizeMcpTools(schemas, limits = DEFAULT_LIMITS) {
 	/** @type {Map<string, { name: string, description: string }[]>} */
 	const byServer = new Map();
 	for (const schema of Array.isArray(schemas) ? schemas : []) {
@@ -200,7 +247,7 @@ export function summarizeMcpTools(schemas) {
  * @param schemas - model-facing tool schemas from `ctx.tools.schemas(...)`.
  * @returns per-server MCP tools plus the sorted non-MCP tools, each with its description.
  */
-export function summarizeTools(schemas) {
+export function summarizeTools(schemas, limits = DEFAULT_LIMITS) {
 	/** @type {{ name: string, description: string }[]} */
 	const local = [];
 	for (const schema of Array.isArray(schemas) ? schemas : []) {
@@ -208,10 +255,10 @@ export function summarizeTools(schemas) {
 		if (typeof name !== "string" || name.length === 0) continue;
 		// A name that parses as an MCP tool belongs to a server, not to `local`.
 		if (splitMcpToolName(name) !== void 0) continue;
-		local.push(toolEntry(name, schema));
+		local.push(toolEntry(name, schema, limits));
 	}
 	return {
-		servers: summarizeMcpTools(schemas),
+		servers: summarizeMcpTools(schemas, limits),
 		local: local.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
 	};
 }
@@ -253,13 +300,13 @@ function resolveAgent(ctx, sessionId) {
  * @param sessionId - optional session whose agent defines the viewing scope.
  * @returns the summary, or a diagnostic instead of a throw.
  */
-export function readToolSummary(ctx, sessionId) {
+export function readToolSummary(ctx, sessionId, limits = DEFAULT_LIMITS) {
 	try {
 		const agent = resolveAgent(ctx, sessionId);
 		// Omitting the scope is the documented global view; passing the agent is
 		// the same call the tool executor makes for a real model step.
 		const schemas = agent === void 0 ? ctx.tools.schemas() : ctx.tools.schemas(agent);
-		const { servers, local } = summarizeTools(schemas);
+		const { servers, local } = summarizeTools(schemas, limits);
 		return {
 			ok: true,
 			/**
@@ -280,13 +327,6 @@ export function readToolSummary(ctx, sessionId) {
 }
 
 /**
- * How many viewing scopes keep a cached answer, and how many remember their last
- * agent answer. Both are bounded so a long-lived Host serving many sessions cannot
- * accumulate catalogs without limit.
- */
-export const MAX_CACHED_SCOPES = 8;
-
-/**
  * Wrap {@link readToolSummary} in a cache plus a per-session memory of the last
  * answer a **live agent** produced.
  *
@@ -302,7 +342,7 @@ export const MAX_CACHED_SCOPES = 8;
  * @param ctx - Host context providing `tools`.
  * @returns the reader and its disposer.
  */
-export function createToolSummaryReader(ctx) {
+export function createToolSummaryReader(ctx, limits = DEFAULT_LIMITS) {
 	/** @type {Map<string, object>} */
 	let cached = new Map();
 	/**
@@ -320,7 +360,7 @@ export function createToolSummaryReader(ctx) {
 	const off = ctx.on("tools/change", invalidate);
 	/** Bound a map by dropping the oldest inserted key. */
 	const bound = (map) => {
-		while (map.size > MAX_CACHED_SCOPES) {
+		while (map.size > (limits.maxRememberedSessions ?? MAX_CACHED_SCOPES)) {
 			const oldest = map.keys().next();
 			if (oldest.done === true) break;
 			map.delete(oldest.value);
@@ -357,7 +397,7 @@ export function createToolSummaryReader(ctx) {
 				cached.set(key, hit);
 				return hit;
 			}
-			const result = readToolSummary(ctx, sessionId);
+			const result = readToolSummary(ctx, sessionId, limits);
 			if (result.ok !== true) return result;
 			if (result.scope === "agent") {
 				remembered.delete(key);
@@ -403,11 +443,22 @@ export function createToolSummaryReader(ctx) {
  * where `result` is `{ ok: true, value }` or `{ ok: false, error: { code, message, details } }`.
  * @param ctx - Host context.
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
+	// Resolve the deployment's bounds once, at activation.
+	//
+	// `config` may be absent entirely (a patch layer that omits `config:`), or hold
+	// only some keys (a hand-written layer that bypasses the schema). Both are
+	// legitimate, so each bound falls back independently rather than assuming the
+	// schema already filled the object in.
+	const limits = Object.freeze({
+		maxDescriptionChars: config?.maxDescriptionChars ?? DEFAULT_LIMITS.maxDescriptionChars,
+		maxSchemaChars: config?.maxSchemaChars ?? DEFAULT_LIMITS.maxSchemaChars,
+		maxRememberedSessions: config?.maxRememberedSessions ?? DEFAULT_LIMITS.maxRememberedSessions,
+	});
 	ctx.effect(() => {
 		// One reader per Loader row: caches the current answer and remembers each
 		// session's last agent-scope answer.
-		const reader = createToolSummaryReader(ctx);
+		const reader = createToolSummaryReader(ctx, limits);
 		const disposeSummary = ctx.connection.fetch.register({
 			path: `${ROUTE_CHANNEL}/${ROUTE_ENDPOINT}`,
 			// `rpc.call` always POSTs. The body carries only the carrier's envelope,
