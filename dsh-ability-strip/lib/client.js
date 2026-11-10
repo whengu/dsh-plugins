@@ -531,21 +531,6 @@ function computePlacement(rect, viewport) {
 		}
 
 		/**
-		 * Compare two payloads by the fields the strip actually renders.
-		 *
-		 * A silent refresh exists to notice a changed answer. An identical answer must
-		 * not reach `setState`: that would rebuild the row and invalidate the memo even
-		 * though nothing the reader sees moved. So every rendered field is compared,
-		 * and the only tolerated identity is a genuinely unchanged answer.
-		 *
-		 * `loadedAt` is deliberately excluded — it always differs, and suppressing it
-		 * means the panel's "读取于" timestamp reflects when the visible content was
-		 * actually obtained, not when the last read happened.
-		 * @param previous - payload currently on screen, possibly undefined.
-		 * @param next - payload just read.
-		 * @returns true when nothing the reader sees has changed.
-		 */
-		/**
 		 * Whether two string lists are equal element by element.
 		 *
 		 * A plain `!==` would compare references, and every read builds a fresh array,
@@ -564,6 +549,21 @@ function computePlacement(rect, viewport) {
 			return true;
 		}
 
+		/**
+		 * Compare two payloads by the fields the strip actually renders.
+		 *
+		 * A silent refresh exists to notice a changed answer. An identical answer must
+		 * not reach `setState`: that would rebuild the row and invalidate the memo even
+		 * though nothing the reader sees moved. So every rendered field is compared,
+		 * and the only tolerated identity is a genuinely unchanged answer.
+		 *
+		 * `loadedAt` is deliberately excluded — it always differs, and suppressing it
+		 * means the panel's "读取于" timestamp reflects when the visible content was
+		 * actually obtained, not when the last read happened.
+		 * @param previous - payload currently on screen, possibly undefined.
+		 * @param next - payload just read.
+		 * @returns true when nothing the reader sees has changed.
+		 */
 		function samePayload(previous, next) {
 			if (previous === void 0 || next === void 0) return previous === next;
 			// Errors are compared by message: a different failure is news.
@@ -612,8 +612,6 @@ function computePlacement(rect, viewport) {
 				// query can find. Left out, a renamed parameter would keep answering the
 				// old search term until the next hard refresh.
 				if (!sameStringList(prevLocal[index]?.paramNames, nextLocal[index]?.paramNames)) return false;
-				// The expanded row's parameter table is rendered from these, so a change
-				// there is visible news even when the schema preview is byte-identical.
 			}
 			// MCP is the field that changes in practice: compare the server list, each
 			// server's tool count, and each tool by value (two fetches never share
@@ -950,7 +948,6 @@ function computePlacement(rect, viewport) {
 				schemaChars: typeof tool?.schemaChars === "number" ? tool.schemaChars : 0,
 				schemaTruncated: tool?.schemaTruncated === true,
 				paramNames,
-				// The host's per-parameter summary, passed through with one guard: a
 				// Built once, here, because this is the only place a tool enters the tree:
 				// the search box then costs one substring test per tool per keystroke.
 				//
@@ -1025,7 +1022,6 @@ function computePlacement(rect, viewport) {
 			// number is what tells the reader whether this tool is worth its price.
 			const [showSchema, setShowSchema] = React.useState(false);
 			const size = tool.schemaChars ?? 0;
-		// Per-parameter rows from the host, derived there from the FULL schema. They stay
 			// Three cases, all reachable: a measurable size, the host's explicit "could
 			// not serialize it" (-1), and no declared parameters at all. The gate below
 			// must therefore be `size !== 0`, not `size > 0` — otherwise the unknown case
@@ -1199,19 +1195,24 @@ function SkillsSection({ skills }) {
  * @param props - connected servers, configured rows, the state words, and the
  *   callback that reopens the fault explanation.
  */
-function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers, stateLabel, fault, onShowFault, query }) {
+function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers, stateLabel, fault, onShowFault, query, searchInForce }) {
 	// A server survives when its own name matches, or it still has matching tools.
 	// The same `filterTools` the non-MCP section uses, applied per server, so a
 	// query that hits an MCP tool also narrows its server's list.
 	const needle = typeof query === "string" ? query.trim().toLowerCase() : "";
-	// The search box lives in the tools section and disappears when that section has
-	// nothing to search. A query left over from before that happened must not keep
-	// this section claiming "no matches for <old term>" with no box to clear it.
-	const searchActive = needle !== "" && connectedServers.length > 0;
-	const shownServers = !searchActive
+	// Whether a query is in force comes from RuntimeStrip, so this section cannot
+	// filter while the tools section has hidden the input that carries it.
+	const shownServers = !searchInForce
 		? connectedServers
 		: connectedServers
-				.map((server) => ({ ...server, tools: filterTools(server.tools, needle) }))
+				.map((server) => ({
+					...server,
+					// `total` keeps the server's real size next to the filtered list, so the
+					// block can say "匹配 1 / 共 28" instead of claiming the server has one.
+					total: server.tools.length,
+					filtered: true,
+					tools: filterTools(server.tools, needle),
+				}))
 				.filter((server) => server.tools.length > 0 || String(server.server).toLowerCase().includes(needle));
 	return h(
 		"div",
@@ -1219,14 +1220,19 @@ function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers,
 		h(GroupHeading, {
 			icon: h(ui.IconGlobeOutlineRegular, { size: 13 }),
 			name: "MCP",
-			count: shownServers.length,
+			// No badge when the read failed. "Could not read" and "there are none" are
+			// different claims, and a failed read yields an empty `shownServers` — so a
+			// bare `shownServers.length` would print "0" and turn our own failure into a
+			// fact about the deployment. The skills and tools headings already refuse
+			// this; the MCP heading was the odd one out.
+			count: tools?.error !== void 0 ? void 0 : shownServers.length,
 			// The words the collapsed mark no longer prints: this heading is where
 			// "连接故障 / 未连接 / 读取失败 / N 个工具" is spelled out.
 			//
 			// Under an active query, `stateLabel` still names the UNFILTERED total
 			// ("28 个工具"). Putting that next to a list showing one tool is the same
 			// dishonesty as the arithmetic line had: say the list is filtered instead.
-			note: searchActive ? `按「${query.trim()}」筛选` : stateLabel,
+			note: searchInForce ? `按「${query.trim()}」筛选` : stateLabel,
 		}),
 		// The connected list is the answer to "does it actually work": these servers
 		// have tools registered in the live registry.
@@ -1242,7 +1248,7 @@ function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers,
 						{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
 						// A search that matched no MCP tool is OUR result, not a fact about
 						// connections: saying "no server connected" there would be a lie.
-						searchActive
+						searchInForce
 							? `没有匹配「${query.trim()}」的 MCP 工具。`
 							: "没有 MCP 服务器注册工具——即当前没有连上的服务器。",
 					)
@@ -1310,6 +1316,12 @@ function McpSection({ tools, inventory, mcpResources, mcpRows, connectedServers,
  * @param props - the server entry from the host's summary.
  */
 function McpServerBlock({ server }) {
+	// Under a query, `server.tools` is the FILTERED list, so printing its length as
+	// the server's tool count would report "0 个工具" for a server that matched by
+	// name but whose tools did not — a lie about the server, produced by our own
+	// filter. `total` is the unfiltered count, carried through by McpSection.
+	const filtered = server.filtered === true;
+	const shown = server.tools.length;
 	return h(
 		"div",
 		{ style: { padding: "3px 0" } },
@@ -1324,7 +1336,11 @@ function McpServerBlock({ server }) {
 			h(
 				"span",
 				{ style: { marginLeft: "auto", fontSize: 11, opacity: 0.65 } },
-				`${server.tools.length} 个工具`,
+				// "匹配 1 / 共 28" while filtering: the reader can see both what their
+				// query found and how much the server actually offers.
+				filtered && typeof server.total === "number"
+					? `匹配 ${shown} / 共 ${server.total} 个工具`
+					: `${shown} 个工具`,
 			),
 		),
 		server.tools.length > 0
@@ -1399,17 +1415,14 @@ function BundlesSection({ bundles }) {
  * MCP" would be wrong by exactly that amount.
  * @param props - the host's `tools` block and the connected MCP servers.
  */
-	function ToolsSection({ tools, connectedServers, query, setQuery }) {
+	function ToolsSection({ tools, connectedServers, query, setQuery, searchInForce }) {
 		// Every tool carries its own searchable text (built in asTool), so typing costs
 		// one substring test per tool rather than a schema walk per tool.
 		// Query state lives in RuntimeStrip so the MCP section can use the same box.
 		const all = React.useMemo(() => (tools?.local ?? []).map(asTool), [tools]);
-		// A query is only "active" while there is a list to search. If a refresh leaves
-		// this section with no tools, the input is hidden but the query would otherwise
-		// survive and keep producing "no matches for <old query>" copy with no box to
-		// clear it. One predicate drives filtering, the meta line, and the empty state.
-		const searchActive = typeof query === "string" && query.trim() !== "" && all.length > 0;
-		const local = filterTools(all, searchActive ? query : "");
+		// `searchInForce` is a prop from RuntimeStrip. Deriving it again here is what
+		// let this section and the MCP section disagree about whether a query was on.
+		const local = filterTools(all, searchInForce ? query : "");
 		const failed = tools?.error !== void 0;
 		const mcpCount = connectedServers.reduce((sum, server) => sum + server.tools.length, 0);
 		const total = tools?.totalTools ?? 0;
@@ -1434,14 +1447,14 @@ function BundlesSection({ bundles }) {
 					: []),
 				// Make the arithmetic visible, so "40 shown, eleven listed" cannot be read as
 				// a bug: the total is split across two sections.
-			(searchActive
+			(searchInForce
 				? `共 ${total} 个：下列 ${all.length} 个非 MCP，其中 ${local.length} 个匹配「${query.trim()}」`
 				: `共 ${total} 个：下列 ${all.length} 个非 MCP`) +
 					// Under an active query the MCP section is filtered too, so naming the
 					// unfiltered total here would read as "the section above shows 28" when
 					// it shows one. Only state a denominator when it describes what is on
 					// screen; otherwise say the count is of the whole registry.
-					(searchActive
+					(searchInForce
 						? `，上方 MCP 分区同样按「${query.trim()}」筛选`
 						: `，上方 MCP 分区 ${mcpCount} 个`) +
 					(unclassified > 0 ? `，另有 ${unclassified} 个名字不可解析` : "") +
@@ -1467,9 +1480,9 @@ function BundlesSection({ bundles }) {
 			{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
 			// A search that matched nothing is OUR result, not a fact about the
 			// deployment: claiming the registry is empty there would be a lie.
-			// `searchActive` (not just a non-empty query) so a hidden box cannot leave
+			// `searchInForce` (not just a non-empty query) so a hidden box cannot leave
 			// a stale "no matches for <old query>" line behind.
-			searchActive
+			searchInForce
 				? `没有匹配「${query.trim()}」的工具。`
 				: mcpCount > 0
 					? "除 MCP 工具外没有注册工具。"
@@ -1522,8 +1535,11 @@ function BundlesSection({ bundles }) {
 								flex: 1,
 								minWidth: 0,
 								padding: "4px 7px",
-								fontSize: 11.5,
+								// `font` BEFORE `fontSize`: it is a shorthand that resets the size,
+								// and React writes these in insertion order, so listing the size
+								// first made it a dead value.
 								font: "inherit",
+								fontSize: 11.5,
 								color: "inherit",
 								background: "color-mix(in srgb, currentColor 6%, transparent)",
 								border: "1px solid color-mix(in srgb, currentColor 14%, transparent)",
@@ -1841,6 +1857,11 @@ function ToolsChip({ payload, loadFailed }) {
 			// and unmount (a read nobody is waiting for must not keep a Host request
 			// alive). One read at a time, so a single slot is enough.
 			const activeRead = React.useRef(null);
+	// Whether this component is still on screen. The read's `finally` uses it to
+	// decide whether a dropped read is worth compensating: after unmount there is no
+	// reader to show it to, and the compensating request could not be aborted by the
+	// cleanup that already ran.
+	const mounted = React.useRef(true);
 
 			const run = React.useCallback(
 				async (options) => {
@@ -1911,9 +1932,15 @@ function ToolsChip({ payload, loadFailed }) {
 						inFlight.current = false;
 						// If a call arrived while this read was in flight, run it now —
 						// with the LATEST caller's options, not this read's.
+						//
+						// Unless this component is gone. Unmount aborts the in-flight read,
+						// which lands here; compensating would start a NEW request that
+						// nobody can abort any more (the unmount cleanup has already run),
+						// leaving a Host request alive for up to the read timeout. The
+						// reader is not looking, so there is nothing to compensate for.
 						const pending = pendingOptions.current;
 						pendingOptions.current = void 0;
-						if (pending !== void 0) {
+						if (pending !== void 0 && mounted.current) {
 							void run(pending);
 						}
 					}
@@ -1925,7 +1952,11 @@ function ToolsChip({ payload, loadFailed }) {
 			// alive for a reader nobody is looking at. Late `setState` calls from that
 			// read are no-ops after unmount, so the abort's only job is the request.
 			React.useEffect(() => {
-				return () => activeRead.current?.abort();
+				mounted.current = true;
+				return () => {
+					mounted.current = false;
+					activeRead.current?.abort();
+				};
 			}, []);
 
 			// No change stream. This row used to hold an SSE connection per tab and
@@ -1942,6 +1973,28 @@ function ToolsChip({ payload, loadFailed }) {
 			}, [run, sessionId]);
 
 			const payload = state.payload;
+	// The single search predicate, shared by both tool sections.
+	//
+	// They used to derive it independently, with different conditions
+	// (`local.length > 0` in one, `connectedServers.length > 0` in the other). That
+	// allowed a state the reader could not escape: the tools section hid its input
+	// because it had no tools, while the MCP section kept filtering by a query with
+	// no visible control to clear it — recoverable only by reloading the page.
+	//
+	// The condition mirrors the input's own render gate (`failed || local.length === 0`
+	// hides it), so "the box is visible" and "the query is in force" are one fact.
+	const localToolCount = Array.isArray(payload?.tools?.local) ? payload.tools.local.length : 0;
+	const searchInForce =
+		typeof query === "string" &&
+		query.trim() !== "" &&
+		payload?.tools?.error === void 0 &&
+		localToolCount > 0;
+	// A query whose box has disappeared is dropped, not merely ignored: leaving it in
+	// state means reopening the panel — or coming back to this session — would
+	// silently re-apply a filter the reader can no longer see or clear.
+	React.useEffect(() => {
+		if (!searchInForce && query !== "") setQuery("");
+	}, [searchInForce, query]);
 			// The whole load failed before producing any payload (a thrown `loadAll`).
 			// The chips otherwise read `payload === void 0` as "not read yet" and would
 			// show "…" forever — the error text exists but sits below the fold. This
@@ -2093,7 +2146,7 @@ function ToolsChip({ payload, loadFailed }) {
 			// Tools first: it is the group the collapsed mark counts.
 			const toolsSection =
 				open && payload !== void 0
-					? h(ToolsSection, { tools: payload.tools, connectedServers, query, setQuery })
+					? h(ToolsSection, { tools: payload.tools, connectedServers, query, setQuery, searchInForce })
 					: null;
 
 			// Skills: the only group whose count the strip also shows collapsed.
@@ -2103,6 +2156,7 @@ function ToolsChip({ payload, loadFailed }) {
 			const mcpSection =
 				open && payload !== void 0
 					? h(McpSection, {
+							searchInForce,
 							query,
 							tools: payload.tools,
 							inventory: payload.inventory,
@@ -2374,6 +2428,12 @@ function ToolsChip({ payload, loadFailed }) {
 			React.useEffect(() => {
 				const onKey = (event) => {
 					if (event.key !== "Escape") return;
+					// While an IME is composing, Escape belongs to the IME: it cancels the
+					// composition. Acting on it here would close the panel mid-word, which
+					// is the opposite of what the reader asked for. This must be a return
+					// BEFORE both branches — guarding only the clear branch would fall
+					// through to closing the panel instead.
+					if (event.isComposing) return;
 					// `aria-modal` distinguishes the fault Modal from this panel (which
 					// is also `role="dialog"` but not modal).
 					if (document.querySelector('[role="dialog"][aria-modal]')) return;
@@ -2382,11 +2442,8 @@ function ToolsChip({ payload, loadFailed }) {
 					// panel would throw away the reader's place. This handler is on the
 					// capture phase at `window`, so the input never sees the key — the
 					// box is recognised by its data attribute instead of by focus.
-					// `isComposing` matters for Chinese/Japanese input: while an IME is
-					// composing, Escape cancels the composition, not our state.
 					const target = event.target;
 					if (
-						!event.isComposing &&
 						target?.dataset?.abilityStripSearch !== void 0 &&
 						typeof target.value === "string" &&
 						target.value !== ""

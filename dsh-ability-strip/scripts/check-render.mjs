@@ -1370,6 +1370,68 @@ const transitionProps = {
 	}
 }
 
+// --- One search predicate, computed once ------------------------------------
+// The two tool sections used to derive `searchActive` independently, with
+// different conditions (`local.length > 0` vs `connectedServers.length > 0`).
+// That divergence was a latent trap: the tools section could hide its input while
+// the MCP section kept filtering by a query with no visible control to clear it.
+//
+// The divergent STATE cannot be reached through the UI (the input only renders
+// when there are local tools), so a behavioural test would be theatre. This pins
+// the invariant that makes the bug unreintroducible instead: exactly one
+// derivation exists, in RuntimeStrip, and both sections consume it as a prop.
+{
+	const source = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+	const derivations = [...source.matchAll(/const\s+searchActive\s*=/g)].length;
+	check(
+		derivations === 0,
+		`no section may derive its own search predicate, found ${derivations} derivation(s)`,
+	);
+	check(
+		(source.match(/const\s+searchInForce\s*=/g) ?? []).length === 1,
+		"exactly one search predicate must exist",
+	);
+	// Both sections must receive it rather than compute it.
+	check(
+		/h\(ToolsSection,\s*\{[^}]*searchInForce/.test(source),
+		"ToolsSection must receive the shared predicate",
+	);
+	check(
+		/h\(McpSection,\s*\{[\s\S]{0,400}?searchInForce/.test(source),
+		"McpSection must receive the shared predicate",
+	);
+}
+
+
+// --- A failed read must not print a count ----------------------------------
+// "Could not read" and "there are none" are different claims. A failed read
+// yields an empty server list, so a bare `.length` would turn our own failure
+// into a fact about the deployment.
+{
+	const failedTools = {
+		...payloadOk,
+		tools: { error: "registry unavailable", totalTools: 0, local: [], servers: [] },
+	};
+	const failedProps = { sessionId: "s-failed-count", load: async () => failedTools };
+	mount(failedProps);
+	await settle();
+	await flush();
+	const failedOpener = findButton(render(failedProps), "明细");
+	failedOpener?.props?.onClick?.();
+	await flush();
+	await settle();
+	const failedText = textOf(render(failedProps));
+	check(has(failedText, "读取失败"), "a failed tools read must say so");
+	// The MCP heading must carry NO count badge: a "0" there would be our failure
+	// presented as a fact about the deployment.
+	const headings = collectElements(render(failedProps))
+		.filter((node) => typeof node.type === "string");
+	check(
+		!failedText.some((t) => typeof t === "string" && /^0$/.test(t.trim())),
+		"a failed read must not render a 0 count",
+	);
+}
+
 // --- No markdown leaks into the rendered text ------------------------------
 // Panel copy is a plain JS string, not markdown: `**bold**` would print its
 // asterisks to the reader. A reader hit exactly that, so it is pinned here.
