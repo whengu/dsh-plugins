@@ -430,6 +430,9 @@ function formatWhen(iso) {
 	const at = typeof iso === "string" ? new Date(iso) : void 0;
 	if (at === void 0 || Number.isNaN(at.getTime())) return "时间未知";
 	const minutes = Math.floor((Date.now() - at.getTime()) / 60000);
+	// A reading stamped in the future is a clock disagreement, not a prediction: the
+	// host and this tab can differ by seconds, and "-3 分钟前" reads as a bug. Reporting
+	// it as "刚刚" is the honest reading of "no measurable delay".
 	if (minutes < 1) return "刚刚";
 	if (minutes < 60) return `${minutes} 分钟前`;
 	const hours = Math.floor(minutes / 60);

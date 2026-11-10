@@ -274,9 +274,9 @@ export function summarizeMcpTools(schemas, limits = DEFAULT_LIMITS) {
 	return [...byServer.entries()]
 		.map(([server, tools]) => ({
 			server,
-			tools: tools.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+			tools: tools.sort((left, right) => compareNames(left.name, right.name)),
 		}))
-		.sort((left, right) => (left.server < right.server ? -1 : left.server > right.server ? 1 : 0));
+		.sort((left, right) => compareNames(left.server, right.server));
 }
 
 /**
@@ -302,8 +302,23 @@ export function summarizeTools(schemas, limits = DEFAULT_LIMITS) {
 	}
 	return {
 		servers: summarizeMcpTools(schemas, limits),
-		local: local.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+		local: local.sort((left, right) => compareNames(left.name, right.name)),
 	};
+}
+
+/**
+ * Compare two display names the way a reader expects to read them.
+ *
+ * Deliberately `localeCompare` and not `<`: a raw code-unit comparison puts every
+ * uppercase name before every lowercase one, so `Zeta` sorts before `alpha` and a
+ * list of tool names reads as shuffled. `localeCompare` follows the reader's
+ * collation and ignores case for the primary comparison.
+ * @param left - first name.
+ * @param right - second name.
+ * @returns negative, zero, or positive, as a sort comparator requires.
+ */
+function compareNames(left, right) {
+	return String(left).localeCompare(String(right));
 }
 
 /**
