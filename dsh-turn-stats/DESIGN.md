@@ -63,7 +63,9 @@ state = {
 | `turn/end` | `open` 非空且有已提交步 → `last = 快照(open)`；`open = null`。`open` 为空（本轮没进 step）→ 保留上一轮 |
 | 其他 | 返回同一引用（change feed 靠 `Object.is` 去抖） |
 
-`wire.view: state => state.last ?? undefined`，`summary: false`（与 `sessionStats` 一致，不进会话列表载荷）。
+`wire.view: state => state.last ?? null`，`viewSchema: turnStatsSchema.nullable()`，`summary: false`（与 `sessionStats` 一致，不进会话列表载荷）。
+
+> 空态必须是 **`null` 而不是 `undefined`**，实现时才发现的硬约束：注册表取 cell 的值是 `wire.viewSchema.parse(wire.view(state))`，**没有任何兜底**（`dsh-session-projection/lib/index.js:584-589`），而 `snapshot()` 一次遍历算出该会话**所有** client-visible 单元——view 返回 `undefined` 会让 zod 抛错，炸掉的是整个会话的投影快照，宿主自己那两颗药丸一起躺枪。宿主唯一的空态先例正是这个形状：`viewSchema: worktreeSchema.nullable()` + `view: … : null`（`dsh-experimental-client-ui-forge/lib/index.js:947-950`）。回归用例把注册表那一行 parse 直接照抄进断言，注入旧 bug 时 4 个用例转红。
 
 **恢复语义**：投影注册表会重放整个 log 重新 fold，所以重开会话、翻页、compaction 都不影响 `last` —— 与宿主 `sessionStats` 的 log-scoped 性质同源。
 
@@ -159,9 +161,9 @@ ctx.slots.inject("conversation.composer.dock", () => {
 | # | 风险 | 影响 | 兜底 |
 |---|---|---|---|
 | 1 | 忘写 `priority: -1` | 注册抛错、**插件激活失败**（不是静默无效） | 冒烟用例断言注册参数；真机看 console 有无 `already has an entry with id` |
-| 2 | 新投影 key 的 `wire` 下发未经真机验证 | 客户端读到 undefined → 两颗**消失** | 静态上运行时 key 不透明（`faceOf(key: string)`），理论必通；装上后第一件事就是核对 DOM 有 `[data-composer-stat]` |
+| 2 | view 与 viewSchema 不匹配（已实现并修：空态必须 `null` + `.nullable()`） | 不是静默消失，而是**会话投影快照整体抛错**，连带宿主药丸 | 用例把注册表的 `viewSchema.parse(view(state))` 照抄为断言，覆盖 init/进行中/已提交/取消四种状态 |
 | 3 | 组件抛错 → 该条目 abdicate → **该 cell 自动回落宿主旧药丸** | 表现是「装了就等于没装」，且**不报错**，极易误判为成功 | 验收必须比对数值口径，不能只看「有没有药丸」；控制台会有 `slot entry crashed in '<slot>'` |
-| 4 | 口径漂移：我们的 fold 复刻宿主规则而非复用其代码（宿主只发全会话标量，无法复用） | 宿主若改 `decodeMs` 定义，两颗会与详情页不一致 | 验收 §6-2 与详情页 per-turn 行交叉核对 |
+| 4 | 口径漂移：首 token 判定**已复用**宿主导出的 `assistantStreamFirstTokenTime`，剩下的漂移面只有求和规则本身 | 宿主若改 `decodeMs` 定义，两颗会与详情页不一致 | 验收 §6-2 与详情页 per-turn 行交叉核对 |
 | 5 | 抄来的 CSS/图标不随宿主升级演进 | 宿主改样式后外观可能不一致 | 只引用 `--dsw-alias-*` token，不用字面色；升级后重截一次图 |
 | 6 | `turn/end` 语义变化 | 定格失效 | 宿主已明文 `{turn, reason}` 是轮边界（`dsh-session/lib/types/types.d.ts:279-282`），概率低 |
 

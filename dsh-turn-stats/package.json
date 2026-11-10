@@ -1,0 +1,43 @@
+{
+  "name": "dsh-turn-stats",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Re-scope the two composer stat pills (decode speed, cache hit) from whole-session to the current turn.",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1",
+    "node": ">=22"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "zod": "4.4.3"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/turn-stats.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/turn-stats.test.mjs test/registry.test.mjs",
+    "pack": "pnpm pack --pack-destination dist"
+  }
+}
