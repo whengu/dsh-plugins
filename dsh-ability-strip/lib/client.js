@@ -543,6 +543,25 @@ function computePlacement(rect, viewport) {
 		 * @param next - payload just read.
 		 * @returns true when nothing the reader sees has changed.
 		 */
+		/**
+		 * Whether two string lists are equal element by element.
+		 *
+		 * A plain `!==` would compare references, and every read builds a fresh array,
+		 * so that would report "changed" on every single refresh.
+		 * @param previous - the list on screen.
+		 * @param next - the list just read.
+		 * @returns true when both hold the same strings in the same order.
+		 */
+		function sameStringList(previous, next) {
+			const before = Array.isArray(previous) ? previous : [];
+			const after = Array.isArray(next) ? next : [];
+			if (before.length !== after.length) return false;
+			for (let index = 0; index < before.length; index += 1) {
+				if (before[index] !== after[index]) return false;
+			}
+			return true;
+		}
+
 		function samePayload(previous, next) {
 			if (previous === void 0 || next === void 0) return previous === next;
 			// Errors are compared by message: a different failure is news.
@@ -587,6 +606,10 @@ function computePlacement(rect, viewport) {
 				if (prevLocal[index]?.schemaChars !== nextLocal[index]?.schemaChars) return false;
 				if (prevLocal[index]?.schema !== nextLocal[index]?.schema) return false;
 				if (prevLocal[index]?.schemaTruncated !== nextLocal[index]?.schemaTruncated) return false;
+				// `paramNames` feeds the search index, so a change there changes what a
+				// query can find. Left out, a renamed parameter would keep answering the
+				// old search term until the next hard refresh.
+				if (!sameStringList(prevLocal[index]?.paramNames, nextLocal[index]?.paramNames)) return false;
 			}
 			// MCP is the field that changes in practice: compare the server list, each
 			// server's tool count, and each tool by value (two fetches never share
@@ -607,6 +630,7 @@ function computePlacement(rect, viewport) {
 					if (prevTools[t]?.schemaChars !== nextTools[t]?.schemaChars) return false;
 					if (prevTools[t]?.schema !== nextTools[t]?.schema) return false;
 					if (prevTools[t]?.schemaTruncated !== nextTools[t]?.schemaTruncated) return false;
+					if (!sameStringList(prevTools[t]?.paramNames, nextTools[t]?.paramNames)) return false;
 				}
 			}
 			// Loader rows: enablement and phase are what the panel prints.
@@ -908,17 +932,78 @@ function computePlacement(rect, viewport) {
 		 * @returns an entry whose fields are always strings.
 		 */
 		function asTool(tool) {
-			if (typeof tool === "string") return { name: tool, description: "", schemaChars: 0 };
+			if (typeof tool === "string") return { name: tool, description: "", schemaChars: 0, haystack: tool.toLowerCase() };
+			const name = typeof tool?.name === "string" ? tool.name : "";
+			const description = typeof tool?.description === "string" ? tool.description : "";
+			const paramNames = Array.isArray(tool?.paramNames) ? tool.paramNames : [];
 			return {
-				name: typeof tool?.name === "string" ? tool.name : "",
-				description: typeof tool?.description === "string" ? tool.description : "",
+				name,
+				description,
 				// The parameter schema and its size. `schemaChars` is measured on the
 				// full schema by the host; `schema` may be a capped preview, so the two
 				// must not be confused (the size is the number worth acting on).
 				schema: typeof tool?.schema === "string" ? tool.schema : void 0,
 				schemaChars: typeof tool?.schemaChars === "number" ? tool.schemaChars : 0,
 				schemaTruncated: tool?.schemaTruncated === true,
+				paramNames,
+				// Built once, here, because this is the only place a tool enters the tree:
+				// the search box then costs one substring test per tool per keystroke.
+				//
+				// The parameter names come from the HOST, not from parsing `schema`: the
+				// schema the browser receives may be a truncated preview, which is not
+				// valid JSON — so parsing it here would silently drop the parameter names
+				// of exactly the biggest schemas.
+				haystack: [name, description, paramNames.join(" ")].join("\n").toLowerCase(),
 			};
+		}
+
+
+		/**
+		 * Filter tools by a query, matching name, description, or parameter names.
+		 * @param tools - entries already carrying a `haystack`.
+		 * @param query - raw text from the search box.
+		 * @returns the matching entries, or all of them when the query is blank.
+		 */
+		function filterTools(tools, query) {
+			// A non-string query cannot happen through the input, but this function is
+			// also reachable from a caller that forgot to coerce: returning the full
+			// list is the safe reading, and a throw here would blank the whole panel.
+			const needle = typeof query === "string" ? query.trim().toLowerCase() : "";
+			if (needle === "") return tools;
+			return tools.filter((tool) => (tool.haystack ?? "").includes(needle));
+		}
+
+		/**
+		 * Pretty-print a schema for display, memoized by the schema string itself.
+		 *
+		 * The schema arrives as a JSON string and never changes for a given tool within
+		 * a read, so parsing it on every render would be wasted work — and a panel with
+		 * dozens of expanded schemas re-renders on every keystroke elsewhere in the
+		 * dock. The map is keyed by the string, so it cannot serve a stale answer; it is
+		 * bounded because a deployment with many tools would otherwise keep every
+		 * schema alive for the life of the tab.
+		 */
+		const PRETTY_CACHE_LIMIT = 64;
+		const prettyCache = new Map();
+		function prettySchema(schema) {
+			const cached = prettyCache.get(schema);
+			if (cached !== void 0) return cached;
+			let text;
+			try {
+				text = JSON.stringify(JSON.parse(schema), null, 2);
+			} catch {
+				// Not valid JSON (or too large to parse): show it verbatim rather than
+				// nothing, because the reader asked to see what the model is sent.
+				text = schema;
+			}
+			if (prettyCache.size >= PRETTY_CACHE_LIMIT) {
+				// Drop the oldest insertion: these are display strings, so re-deriving
+				// one later costs a parse and nothing else.
+				const oldest = prettyCache.keys().next();
+				if (oldest.done !== true) prettyCache.delete(oldest.value);
+			}
+			prettyCache.set(schema, text);
+			return text;
 		}
 
 		/**
@@ -1048,14 +1133,12 @@ function computePlacement(rect, viewport) {
 										},
 										// Pretty-printed when it parses: a raw one-line schema is
 										// unreadable, and the reader came here to read it.
-										(() => {
-											try {
-												return JSON.stringify(JSON.parse(tool.schema), null, 2);
-											} catch {
-												return tool.schema;
-											}
-										})(),
-										tool.schemaTruncated ? "\n… （参数过长，仅显示前 6000 字符）" : "",
+										prettySchema(tool.schema),
+										// No number here on purpose: the cap is a deployment setting
+										// (`maxSchemaChars`) and the browser is never told its value, so a
+										// literal would start lying the moment an operator changed it. The
+										// size on the row is the honest number anyway.
+										tool.schemaTruncated ? "\n… （参数过长，仅显示开头部分）" : "",
 									)
 								: null,
 						),
@@ -1290,11 +1373,15 @@ function BundlesSection({ bundles }) {
  * @param props - the host's `tools` block and the connected MCP servers.
  */
 function ToolsSection({ tools, connectedServers }) {
-	const local = (tools?.local ?? []).map(asTool);
+		// Every tool carries its own searchable text (built in asTool), so typing costs
+		// one substring test per tool rather than a schema walk per tool.
+		const [query, setQuery] = React.useState("");
+		const all = React.useMemo(() => (tools?.local ?? []).map(asTool), [tools]);
+		const local = filterTools(all, query);
 	const failed = tools?.error !== void 0;
 	const mcpCount = connectedServers.reduce((sum, server) => sum + server.tools.length, 0);
 	const total = tools?.totalTools ?? 0;
-	const unclassified = Math.max(0, total - local.length - mcpCount);
+		const unclassified = Math.max(0, total - all.length - mcpCount);
 	const metaStyle = { fontSize: 10.5, opacity: 0.55, lineHeight: 1.5 };
 	/** Muted explanatory lines, kept out of the children array as data. */
 	const meta = failed
@@ -1315,7 +1402,9 @@ function ToolsSection({ tools, connectedServers }) {
 					: []),
 				// Make the arithmetic visible, so "40 shown, eleven listed" cannot be read as
 				// a bug: the total is split across two sections.
-				`共 ${total} 个：下列 ${local.length} 个非 MCP` +
+			(query.trim() === ""
+				? `共 ${total} 个：下列 ${all.length} 个非 MCP`
+				: `共 ${total} 个：下列 ${all.length} 个非 MCP，其中 ${local.length} 个匹配「${query.trim()}」`) +
 					`，上方 MCP 分区 ${mcpCount} 个` +
 					(unclassified > 0 ? `，另有 ${unclassified} 个名字不可解析` : "") +
 					"。",
@@ -1338,7 +1427,13 @@ function ToolsSection({ tools, connectedServers }) {
 		body = h(
 			"div",
 			{ style: { fontSize: 11.5, opacity: 0.7, padding: "4px 0" } },
-			mcpCount > 0 ? "除 MCP 工具外没有注册工具。" : "注册表里没有任何工具。",
+			// A search that matched nothing is OUR result, not a fact about the
+			// deployment: claiming the registry is empty there would be a lie.
+			query.trim() !== ""
+				? `没有匹配「${query.trim()}」的工具。`
+				: mcpCount > 0
+					? "除 MCP 工具外没有注册工具。"
+					: "注册表里没有任何工具。",
 		);
 	} else {
 		body = h(
@@ -1364,6 +1459,28 @@ function ToolsSection({ tools, connectedServers }) {
 			note: toolsNote(tools, failed),
 		}),
 		meta.map((text, index) => h("div", { key: `meta-${index}`, style: metaStyle }, text)),
+			// Only offered when there is something to search: an input above an empty
+			// list is a control that cannot do anything.
+			failed || all.length === 0
+				? null
+				: h("input", {
+						type: "search",
+						value: query,
+						placeholder: `在 ${all.length} 个工具里搜索（名字 / 描述 / 参数名）`,
+						"aria-label": "搜索工具",
+						onChange: (event) => setQuery(event.target.value),
+						style: {
+							margin: "4px 0 2px",
+							padding: "4px 7px",
+							fontSize: 11.5,
+							font: "inherit",
+							color: "inherit",
+							background: "color-mix(in srgb, currentColor 6%, transparent)",
+							border: "1px solid color-mix(in srgb, currentColor 14%, transparent)",
+							borderRadius: 6,
+							outline: "none",
+						},
+					}),
 		body,
 	);
 }

@@ -194,13 +194,56 @@ function toolEntry(name, schema, limits = DEFAULT_LIMITS) {
 		schemaChars = -1;
 	}
 	const schemaTruncated = schemaChars > limits.maxSchemaChars;
+	// Parameter names are collected HERE, from the full schema, because the browser
+	// only ever receives a preview: a truncated JSON string cannot be parsed, so a
+	// browser-side extraction would silently lose the parameter names of exactly the
+	// biggest schemas — the ones a reader most needs to search by.
+	const paramNames = collectParamNames(schema?.parameters);
 	return {
 		name,
 		description,
 		schemaChars,
+		...(paramNames.length === 0 ? {} : { paramNames }),
 		...(schemaText === "" ? {} : { schema: schemaTruncated ? `${schemaText.slice(0, limits.maxSchemaChars)}…` : schemaText }),
 		...(schemaTruncated ? { schemaTruncated: true } : {}),
 	};
+}
+
+/**
+ * Every parameter name a JSON-Schema declares, dot-joined for nesting.
+ *
+ * A reader who searches for "command" should find the tool that takes one even when
+ * the word appears in neither its name nor its description. Union branches are
+ * followed because that is how a multi-typed parameter is written.
+ *
+ * Bounded by depth rather than by count: a pathological schema with thousands of
+ * nested properties must not turn one panel read into a megabyte of names, and the
+ * names below the bound add nothing a reader would search for.
+ * @param node - a JSON-Schema node.
+ * @param prefix - the dotted path so far.
+ * @param out - collector, shared across the recursion.
+ * @param depth - current nesting depth.
+ * @returns the collected names.
+ */
+export function collectParamNames(node, prefix = "", out = [], depth = 0) {
+	if (node === null || typeof node !== "object" || depth > 4) return out;
+	const properties = node.properties;
+	if (properties !== null && typeof properties === "object") {
+		for (const key of Object.keys(properties)) {
+			const path = prefix === "" ? key : `${prefix}.${key}`;
+			out.push(path);
+			collectParamNames(properties[key], path, out, depth + 1);
+		}
+	}
+	for (const branchKey of ["anyOf", "oneOf", "allOf"]) {
+		const branches = node[branchKey];
+		if (!Array.isArray(branches)) continue;
+		// `depth + 1`, not `depth`: a schema that references itself through `allOf`
+		// would otherwise recurse at the same level forever. Union branches are a
+		// descent like a property is, so they must count against the bound.
+		for (const branch of branches) collectParamNames(branch, prefix, out, depth + 1);
+	}
+	return out;
 }
 
 /**
