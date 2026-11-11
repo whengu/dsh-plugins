@@ -2,10 +2,10 @@
  * dsh-turn-stats — browser half.
  *
  * Replaces the two composer statistics pills in place, so the same two slots
- * keep their exact position and show the last completed Turn's figures instead
- * of the whole session's. The replacement is the framework's own shadowing
- * mechanism, not a DOM patch: `conversation.composer.dock` is a list slot whose
- * cell key is `options.id`, and an entry that reuses a shipped id joins THAT
+ * keep their exact position and show the most recent settled call's figures
+ * instead of the whole session's. The replacement is the framework's own
+ * shadowing mechanism, not a DOM patch: `conversation.composer.dock` is a list
+ * slot whose cell key is `options.id`, and an entry that reuses a shipped id joins THAT
  * cell; the renderer sorts a list slot by `priority` ascending and then by
  * `order`, and renders the first live entry of each cell. Two consequences, both
  * read from the runtime rather than assumed:
@@ -99,7 +99,7 @@ window.__ModuleLoader__.load({
 		/**
 		 * Decode-throughput figure: whole tokens from ten up, one decimal below.
 		 * Copied from the shipped chat package so the same speed reads the same way
-		 * here and in the Turn-tail.
+		 * here and in the host's own pills.
 		 * @param {number} tps - Tokens per second.
 		 * @returns {string} display number without unit.
 		 */
@@ -204,16 +204,16 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Decode speed for the last completed Turn.
+		 * Decode speed for the most recent settled call.
 		 * @param {{ useProjection: (key: string) => any, t: (key: string, options?: any) => string }} props
 		 */
 		function ActivityPill({ useProjection, t }) {
 			const stats = useProjection(PROJECTION_KEY);
-			// `null` is the wire's empty value (the fold has no completed Turn yet);
+			// `null` is the wire's empty value (no settled call yet);
 			// `undefined` covers a snapshot that has not carried the key at all.
 			if (stats == null) return null;
-			// The same gate the shipped pill uses: a Turn with no decode window has no
-			// speed, and 0 tok/s would be a claim, not an absence.
+			// The same gate the shipped pill uses: a call with no decode window has
+			// no speed, and 0 tok/s would be a claim, not an absence.
 			if (!(stats.decodeMs > 0)) return null;
 			const tps = stats.decodeTokens / (stats.decodeMs / 1e3);
 			return h(Pill, {
@@ -224,7 +224,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Cache-hit share for the last completed Turn.
+		 * Cache-hit share for the most recent settled call.
 		 * @param {{ useProjection: (key: string) => any, t: (key: string, options?: any) => string }} props
 		 */
 		function UsagePill({ useProjection, t }) {
@@ -252,7 +252,7 @@ window.__ModuleLoader__.load({
 			},
 			en: {
 				title: "Last call",
-				description: "Speed and cache hit for the most recent model call.",
+				description: "Speed and cache hit for the most recent model call, refreshed as each call settles.",
 				speed: "{tps} tok/s",
 				cacheHit: "Cache {percent}%",
 			},

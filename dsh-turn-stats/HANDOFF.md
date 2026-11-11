@@ -36,7 +36,7 @@
 - [ ] 视觉与文案外观（字号、间距、图标、截断提示）由用户确认。数值口径已用服务端数据自证，见下。
 - [x] **v2（0.2.0）实现**：fold 只认 `assistant/message`、去掉 `open`/`settledSteps`/`turn/end` 提交点，`stateVersion` 1→2，客户端只改文案并缩短为 `缓存 {percent}%`（用户要求省状态栏空间，REQUIREMENTS §6.4）。`pnpm check` rc=0、`pnpm test` 18/18。
   **用例有效性做过变异验证**（4 个变异全转红，还原后 md5 与基线一致）：去掉「不可证就不发布」守卫 → 4 红；`stateVersion` 退回 1 → 1 红；`stateSchema` 去掉 `.strict()`（v1 的 `{open,last}` 会被当成 v2 状态静默读走）→ 1 红；去掉时间倒挂夹取 → 1 红。**新增用例里有一条专门拒收 v1 状态形状**，别顺手把 `.strict()` 去掉。
-- [ ] **0.2.0 安装 + 重启**：宿主 fold 变了 → 替换已装包必须重启 Host（判据见工作区 `notes/config/quick-facts.md`「升级要不要重启」）。重启后旧 checkpoint 因 `stateVersion` 不符被丢弃、每会话冷读重放一次尾部，属预期。
+- [ ] **重启要不要做，尚未归因**：官方明文与仓库 INSTALL.md §15.1 的代码层解释都说"替换已装包的宿主 JS 必须重启"，而 0.2.0 装完后在**未重启**的进程里读到了 `ver 2`（见下「安装与实测证据（0.2.0）」第 2 条，含反证：loader 确实是裸 `import(name)`、无 cache-busting，`node_modules/<包>` 也不是版本化软链）。两者只能有一个对，**当前未归因**；保守下限仍按 §15.1 执行 = 重启。重启的副作用是确定的：旧 checkpoint 因 `stateVersion` 不符被丢弃、每会话冷读重放一次尾部。
 - [x] ~~下期若做实时值，改动点是宿主 fold 增加 `open` 快照下发~~ —— **v2 走了另一条路**：不新增 `open` 下发，而是**取消跨调用求和**，直接发每次调用的结算值，代码反而变少。真·流式实时（接 `agent/assistant-stream`）已明确否决，理由写在 DESIGN §7。
 
 ## 回滚
@@ -129,6 +129,6 @@ w(d); print([(v['ver'], v['seq'], v['val']) for v in out])"
 ```
 
 1. **跑的是 v2**：同一个 checkpoint 文件从 0.1.x 时代的 `ver 1` + `{open,last}` 变成 `ver 2` + `{last}`。旧行被替换而不是被静默沿用——`stateVersion` 与 `.strict()` 那两层守卫在真宿主上是起作用的。
-2. **这次重启不是必要条件**（推翻本仓库此前的绝对说法）：`install_bundle` 返回 `applied` 后，在**未重启**的进程里（`ps` 显示 dsh `etimes 973`，远早于安装时刻）读到的就已经是 `ver 2`。官方"替换已装包要重启"讲的是保守下限，第三方插件的宿主模块至少这一例是 HMR 直接换掉的。仍然建议重启，但**判据要用运行态形状，不要拿文件差异当结论**——工作区 `notes/config/quick-facts.md` 已按此改正。
+2. **重启是否必需：当前未归因，保守下限仍是重启。** 观察到"未重启即生效"：`install_bundle` 返回 `applied` 后，在未重启的进程里（`ps` 显示 dsh `etimes 973`，远早于安装；容器内只有一个 node 进程、无 worker）读到的就是 `ver 2`。**但反证同样硬**：`cordis-plugin-loader` 用裸 `import(name)`、无 cache-busting（`/opt/conda/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js:342-349`），且 `node_modules/dsh-turn-stats` 是真实目录、不是版本化软链（换版本不换路径），按此不可能拿到新代际；仓库 INSTALL.md §15.1 还记着 11-09 一次"新路由 404 = 宿主仍是旧代际"。**两条都是实测，谁也没被解释掉**，所以本仓库的操作口径不变（照 §15.1 重启），要改口径得先有可复现的实验。能确定的一件事：**判生效要用运行态形状，别拿文件差异当结论**。工作区笔记同步记在 `/workspace/deepseek-harness/default-workspace/notes/config/quick-facts.md`。
 3. **§6.3 验收通过（同轮内就刷新）**：同一轮 `turn 43` 内两次读取，`seq 5829 → 5836`、值 `7051ms / 1396 tok → 3728ms / 921 tok`。轮还没结束，数值已经属于本轮并随每次调用改写——0.1.x 的 `turn/end` 提交点做不到，也不允许做到。
 4. **踩过的取数坑**：`ls -t` 取最新 checkpoint 会抓到**并行会话**的文件（本 profile 同时有多个会话在写）。当时表现为"轮号从 42 跳到 72"，看着像 fold 坏了，其实是读错文件。判据：先固定会话 id，再看 `seq` 是否单调。

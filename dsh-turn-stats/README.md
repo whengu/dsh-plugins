@@ -50,7 +50,7 @@
 
 ## 安装
 
-跨插件铁律见仓库根 [INSTALL.md](../INSTALL.md)。本插件是 **host + client 双半边**：宿主半边改了投影注册、客户端半边改了渲染，客户端半边**只需浏览器硬刷新**。宿主半边按官方保守下限应当重启 Host（[§15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)），但 0.2.0 实测**未重启也已生效**——别拿文件差异当结论，按运行态判据现查：读该会话投影 checkpoint 里 `turnStats` 的 `ver`（应为 `2`）与 `val` 形状（应为 `{last: …}`）。**判会话文件必须按会话 id 钉死路径**，`ls -t` 会抓到并行会话。
+跨插件铁律见仓库根 [INSTALL.md](../INSTALL.md)。本插件是 **host + client 双半边**：客户端半边**只需浏览器硬刷新**；宿主半边按 [§15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启) **重启 Host**。0.2.0 有一次"未重启就读到新 `ver`"的观察，但它与 §15.1 的代码层解释（裸 `import()`、无 cache-busting）**正面冲突且未归因**，所以口径不改（证据与反证都记在 [HANDOFF.md](HANDOFF.md) 「安装与实测证据（0.2.0）」第 2 条）。装完无论如何**用运行态判据核对**：读该会话投影 checkpoint 里 `turnStats` 的 `ver`（应为 `2`）与 `val` 形状（应为 `{last: …}`）；**必须按会话 id 钉死文件路径**，`ls -t` 会抓到并行会话。
 
 ```bash
 # 站在本插件目录里
@@ -84,6 +84,6 @@ pnpm test                     # 18 个用例（零网络、零浏览器）
 
 ## 版本
 
-- 0.2.0 — **口径改为最近一次模型调用**：fold 去掉跨调用累加（`open` 累加器、`settledSteps`、`step/start` 跨轮清理、`turn/end` 提交点全部删除，只认 `assistant/message`），状态从 `{open, last}` 塌成 `{last}`，**`stateVersion` 1 → 2**；线载荷形状不变故客户端只改文案。副作用：不可证的调用一律不发布（宁可留着上一个数），且 change feed 不再有多余的 `null` 帧。药丸文字缩短为 `缓存 {percent}%`。安装要重启 Host。
+- 0.2.0 — **口径改为最近一次模型调用**：fold 去掉跨调用累加（`open` 累加器、`settledSteps`、`step/start` 跨轮清理、`turn/end` 提交点全部删除，只认 `assistant/message`），状态从 `{open, last}` 塌成 `{last}`，**`stateVersion` 1 → 2**；线载荷形状不变故客户端只改文案。副作用：不可证的调用一律不发布（宁可留着上一个数），且 change feed 不再有多余的 `null` 帧。药丸文字缩短为 `缓存 {percent}%`。装完按运行态判据现查（HANDOFF「安装与实测证据（0.2.0）」第 1、2 条），不确定就重启 Host。
 - 0.1.0 — 首版：`turnStats` 投影 + 顶替两颗药丸（轮口径，`turn/end` 定格）。
 - 0.1.1 — `@deepseek-ai/dsh-llm` 与 `zod` 改为 **optional peer**（`engines.dsh` 才是运行门槛），与 `dsh-read-img` 同规约。装 0.1.0 时 pnpm 报 `Issues with peer dependencies`：把宿主包写成硬 peer 且精确锁版，会让以后每次宿主升级都报未满足。

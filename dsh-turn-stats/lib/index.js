@@ -1,10 +1,12 @@
 /**
  * dsh-turn-stats — host half.
  *
- * Registers the `turnStats` projection unit so the browser can read one
- * completed Turn's decode speed and cache-hit inputs the same way it reads the
- * host's own whole-session figures. Nothing else is registered: no route, no
- * tool, no prompt or message rewriting. The visual half lives in `./client`.
+ * Registers the `turnStats` projection unit so the browser can read the most
+ * recent settled model call's decode speed and cache-hit inputs the same way it
+ * reads the host's own whole-session figures. Nothing else is registered: no
+ * route, no tool, no prompt or message rewriting. The visual half lives in
+ * `./client`. The unit is still keyed `turnStats` although its scope is one
+ * call; REQUIREMENTS §6.2 records why the name was deliberately kept.
  *
  * Why a projection instead of client-side maths: `practices.md:38` states the
  * Client must not fold session events itself — a value derived from a session is
