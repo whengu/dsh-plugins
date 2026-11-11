@@ -1,0 +1,51 @@
+{
+  "name": "dsh-turn-stats",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Point the two composer stat pills (decode speed, cache hit) at the most recent model call instead of the whole session.",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1",
+    "node": ">=22"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1",
+    "zod": "*"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/turn-stats.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/turn-stats.test.mjs test/registry.test.mjs",
+    "pack": "pnpm pack --pack-destination dist"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  }
+}

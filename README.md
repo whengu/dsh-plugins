@@ -38,11 +38,12 @@ push 被拒（`rejected (fetch first)`）不是意外，是并发改同一仓库
 
 | 插件 | 形态 | 版本（源码） | 已装版本 | 文档 |
 | --- | --- | --- | --- | --- |
-| [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.5.0 | `web` profile **0.5.0**，真机页面验收通过 | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
-| [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.1 | `web` profile **0.1.0**（0.1.1 只加了测试，`lib/` 未改；发版后需重启 Host） | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
+| [dsh-ability-strip](dsh-ability-strip/) | host + client 双半边 | 0.16.2 | `web` profile **0.16.2**（2026-11-11 实测；此行曾长期停在 0.5.0） | [README](dsh-ability-strip/README.md) · [HANDOFF](dsh-ability-strip/HANDOFF.md) |
+| [dsh-subagent-wait-reminder](dsh-subagent-wait-reminder/) | 纯 host 半边 | 0.1.1 | `web` profile **0.1.1**（2026-11-11 实测；此行此前停在 0.1.0） | [README](dsh-subagent-wait-reminder/README.md) · [HANDOFF](dsh-subagent-wait-reminder/HANDOFF.md) |
 | [dsh-read-img](dsh-read-img/) | 纯 host 半边 | 0.1.6 | `web` profile **0.1.6**（2026-11-09 装入，模型配置沿用原 `tool-vision`；装完无需重启 Host，已实测生效） | [README](dsh-read-img/README.md) · [HANDOFF](dsh-read-img/HANDOFF.md) |
+| [dsh-turn-stats](dsh-turn-stats/) | host + client 双半边 | 0.2.0 | `web` profile **0.2.0**（2026-11-11 装入并做运行态核对：投影 `ver 2`、同一轮内随每次调用刷新。源码另含若干**注释订正**，行为与线载荷一致，有意未发版——核对到 HEAD 比已装新不是漏装，见其 HANDOFF） | [README](dsh-turn-stats/README.md) · [HANDOFF](dsh-turn-stats/HANDOFF.md) |
 
-> 「已装版本」是**实测值**（读 `$DSH_HOME/profiles/<profile>/node_modules/<包名>/package.json`），不是推断。核对命令见 [INSTALL.md §11.5](INSTALL.md#115-升级)。
+> 「已装版本」是**实测值**（读 `$DSH_HOME/profiles/<profile>/node_modules/<包名>/package.json`），不是推断。核对命令见 [INSTALL.md §11.5](INSTALL.md#115-升级)。**发版的那次改动要顺手把本表对应行一起改掉**——2026-11-11 一次性核对时发现三行里有两行停在旧版本，说明"记得改"靠不住。
 
 ## 快速开始（给第一次接触本仓库的人）
 

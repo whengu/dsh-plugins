@@ -677,6 +677,10 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 
 **本机实测（2026-11-09）**：替换 `dsh-ability-strip` 0.3.0 → 0.4.0 后硬刷新，客户端已是 0.4.0（新警示标出现），但新增的 `GET /api/ability-strip/events` 仍 404、旧的 `POST /api/ability-strip` 正常 200 → 宿主仍是旧模块代际。
 
+**另一次与之冲突的观察（2026-11-11，未归因，口径不变）**：装 `dsh-turn-stats` 0.1.1 → 0.2.0（宿主 `lib/turn-stats.js` 变了、投影 `stateVersion` 1→2）后，在**未重启**的进程里就读到了只有新代码才能产出的投影 `ver 2`（当时 `ps` 显示 dsh `etimes 973`，容器内只有一个 node 进程、无 worker 可归因）。可上面那条代码层解释并没有被推翻：loader 仍是裸 `import(name)`、无 cache-busting，且 `node_modules/<包>` 是**真实目录而非版本化软链**（换版本不换路径，所以"路径变了才拿到新代码"这个假说不成立）。**两条都是实测，谁也没被解释掉**，因此：本表的"必须重启"**维持不变**，也不为此追加调查（用户 2026-11-11 裁决：接受每次重启的代价）。细节与反证出处见 `dsh-turn-stats/HANDOFF.md`「安装与实测证据（0.2.0）」第 2 条。
+
+**`plugin_manager` 的 `restart-required` 不能当作唯一依据**（同日实测）：两次替换已装包（含宿主 JS 变化的 0.2.0）都只回 `application: "applied"`、`warnings: []`，**没有**报 `restart-required`。所以 15.2 那句"官方 API 会直接给出"要按"给了就信、没给不代表不用重启"来用。
+
 > **判别法**：不要靠日志或进程列表猜，**探测只有新代码才有的路由/行为**。官方 API（`plugin_manager`）会直接给出 `restart-required`，见 15.2。
 
 ### 15.2 官方安装入口（我们没在用）
