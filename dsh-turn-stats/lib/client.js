@@ -212,8 +212,10 @@ window.__ModuleLoader__.load({
 			// `null` is the wire's empty value (no settled call yet);
 			// `undefined` covers a snapshot that has not carried the key at all.
 			if (stats == null) return null;
-			// The same gate the shipped pill uses: a call with no decode window has
-			// no speed, and 0 tok/s would be a claim, not an absence.
+			// The same gate the shipped pill uses: a call with no decode window has no
+			// speed at all, so show nothing. A settled call that reports zero output
+			// tokens (or a rate that rounds to zero) DOES show `0 tok/s` — that is a
+			// measured claim, not a placeholder; see REQUIREMENTS §6.5.
 			if (!(stats.decodeMs > 0)) return null;
 			const tps = stats.decodeTokens / (stats.decodeMs / 1e3);
 			return h(Pill, {

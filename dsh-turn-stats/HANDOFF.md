@@ -36,7 +36,8 @@
 - [ ] 视觉与文案外观（字号、间距、图标、截断提示）由用户确认。数值口径已用服务端数据自证，见下。
 - [x] **v2（0.2.0）实现**：fold 只认 `assistant/message`、去掉 `open`/`settledSteps`/`turn/end` 提交点，`stateVersion` 1→2，客户端只改文案并缩短为 `缓存 {percent}%`（用户要求省状态栏空间，REQUIREMENTS §6.4）。`pnpm check` rc=0、`pnpm test` 18/18。
   **用例有效性做过变异验证**（4 个变异全转红，还原后 md5 与基线一致）：去掉「不可证就不发布」守卫 → 4 红；`stateVersion` 退回 1 → 1 红；`stateSchema` 去掉 `.strict()`（v1 的 `{open,last}` 会被当成 v2 状态静默读走）→ 1 红；去掉时间倒挂夹取 → 1 红。**新增用例里有一条专门拒收 v1 状态形状**，别顺手把 `.strict()` 去掉。
-- [ ] **重启要不要做，尚未归因**：官方明文与仓库 INSTALL.md §15.1 的代码层解释都说"替换已装包的宿主 JS 必须重启"，而 0.2.0 装完后在**未重启**的进程里读到了 `ver 2`（见下「安装与实测证据（0.2.0）」第 2 条，含反证：loader 确实是裸 `import(name)`、无 cache-busting，`node_modules/<包>` 也不是版本化软链）。两者只能有一个对，**当前未归因**；保守下限仍按 §15.1 执行 = 重启。重启的副作用是确定的：旧 checkpoint 因 `stateVersion` 不符被丢弃、每会话冷读重放一次尾部。
+- [x] **重启要不要做：已裁决，不查了。** 官方明文与 INSTALL.md §15.1 的代码层解释（裸 `import()`、无 cache-busting）都要求重启，而 0.2.0 装完后确实在未重启的进程里读到过 `ver 2`（下条证据第 2 点，含反证）。**用户 11-11 明确接受每次宿主变更都重启，这条悬案不再作为待办追踪**，口径就是照 §15.1 重启。重启的确定副作用照旧：旧 checkpoint 因 `stateVersion` 不符被丢弃、每会话冷读重放一次尾部。
+- [ ] **源码比已装的 0.2.0 多了几处注释/文案订正**（`cfb1336` 起：两个半边的模块头与 jsdoc、README/DESIGN/HANDOFF 的自相矛盾处）。**行为与线载荷完全一致**，只是 `lib/` 里的注释文字变了，故**未发版**；随下一次真实改动一起出包，别为注释单开版本号。核对方法：`node -p "require('/data/profiles/web/node_modules/dsh-turn-stats/package.json').version"` 是 0.2.0，而仓库 HEAD 更新——这是有意状态，不是漏装。
 - [x] ~~下期若做实时值，改动点是宿主 fold 增加 `open` 快照下发~~ —— **v2 走了另一条路**：不新增 `open` 下发，而是**取消跨调用求和**，直接发每次调用的结算值，代码反而变少。真·流式实时（接 `agent/assistant-stream`）已明确否决，理由写在 DESIGN §7。
 
 ## 回滚
@@ -129,6 +130,6 @@ w(d); print([(v['ver'], v['seq'], v['val']) for v in out])"
 ```
 
 1. **跑的是 v2**：同一个 checkpoint 文件从 0.1.x 时代的 `ver 1` + `{open,last}` 变成 `ver 2` + `{last}`。旧行被替换而不是被静默沿用——`stateVersion` 与 `.strict()` 那两层守卫在真宿主上是起作用的。
-2. **重启是否必需：当前未归因，保守下限仍是重启。** 观察到"未重启即生效"：`install_bundle` 返回 `applied` 后，在未重启的进程里（`ps` 显示 dsh `etimes 973`，远早于安装；容器内只有一个 node 进程、无 worker）读到的就是 `ver 2`。**但反证同样硬**：`cordis-plugin-loader` 用裸 `import(name)`、无 cache-busting（`/opt/conda/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js:342-349`），且 `node_modules/dsh-turn-stats` 是真实目录、不是版本化软链（换版本不换路径），按此不可能拿到新代际；仓库 INSTALL.md §15.1 还记着 11-09 一次"新路由 404 = 宿主仍是旧代际"。**两条都是实测，谁也没被解释掉**，所以本仓库的操作口径不变（照 §15.1 重启），要改口径得先有可复现的实验。能确定的一件事：**判生效要用运行态形状，别拿文件差异当结论**。工作区笔记同步记在 `/workspace/deepseek-harness/default-workspace/notes/config/quick-facts.md`。
+2. **重启是否必需：当前未归因，保守下限仍是重启。** 观察到"未重启即生效"：`install_bundle` 返回 `applied` 后，在未重启的进程里（`ps` 显示 dsh `etimes 973`，远早于安装；容器内只有一个 node 进程、无 worker）读到的就是 `ver 2`。**但反证同样硬**：`cordis-plugin-loader` 用裸 `import(name)`、无 cache-busting（`/opt/conda/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js:342-349`），且 `node_modules/dsh-turn-stats` 是真实目录、不是版本化软链（换版本不换路径），按此不可能拿到新代际；仓库 INSTALL.md §15.1 还记着 11-09 一次"新路由 404 = 宿主仍是旧代际"。**两条都是实测，谁也没被解释掉**，所以本仓库的操作口径不变（照 §15.1 重启）。**11-11 已裁决：不做这个实验，用户接受每次重启的代价；本条只留档备查，见 REQUIREMENTS §6.5。**能确定的一件事：**判生效要用运行态形状，别拿文件差异当结论**。工作区笔记同步记在 `/workspace/deepseek-harness/default-workspace/notes/config/quick-facts.md`。
 3. **§6.3 验收通过（同轮内就刷新）**：同一轮 `turn 43` 内两次读取，`seq 5829 → 5836`、值 `7051ms / 1396 tok → 3728ms / 921 tok`。轮还没结束，数值已经属于本轮并随每次调用改写——0.1.x 的 `turn/end` 提交点做不到，也不允许做到。
 4. **踩过的取数坑**：`ls -t` 取最新 checkpoint 会抓到**并行会话**的文件（本 profile 同时有多个会话在写）。当时表现为"轮号从 42 跳到 72"，看着像 fold 坏了，其实是读错文件。判据：先固定会话 id，再看 `seq` 是否单调。

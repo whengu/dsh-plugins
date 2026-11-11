@@ -44,6 +44,7 @@
 | 速率会比轮口径**抖**（v2 新增） | 样本只有一次调用，小步只吐几百 token 时算出的速率噪声天然大。这是"少等"的代价，REQUIREMENTS §6.2 已确认接受 |
 | 缓存命中更常显示 `0%`（v2 起更明显） | provider 只在**部分** `assistant/message` 上带 `cacheReadTokens`（2026-11-11 实测：turn 31 有 137,088，turn 32–34 为 0）。轮口径会被同轮其他调用摊平，调用口径不会——但**宿主会话级同样是「无上报即 0」**，两颗同源 |
 | 带重试的轮，缓存分母可能比宿主会话值少一次尝试 | 我们对齐 `sessionStats`（按 `assistant/message` 计），宿主会话缓存对齐 `tokenUsage`（按计费尝试计）。两者定义本就不同 |
+| 一次调用可能显示 `0 tok/s` | 该次调用报 0 输出 token，或真实速率低于 0.05 token/s（`formatTokensPerSecond` 一位小数）都会印成 `0`。**这是测出来的 0，不是占位数字**，与 §2.5 不冲突——2026-11-11 用户裁决接受（REQUIREMENTS §6.5），评审别再当 bug 提 |
 | 图标依赖宿主 sprite 的 `<symbol>` id | 不可 require primitives；id 找不到时该颗只显示文字，不显示破图 |
 | 悬停提示用原生 `title`，只在文字被截断时出现 | 宿主用 primitives 的 `Tooltip`（`onlyWhenClipped`），同样不可 require。可观察契约（截断才给全文）保留，延迟由浏览器决定 |
 | 只装客户端半边时两颗消失 | 不退回会话累计——否则等于伪装成功径 |

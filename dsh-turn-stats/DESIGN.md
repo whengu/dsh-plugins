@@ -138,6 +138,7 @@ ctx.slots.inject("conversation.composer.dock", () => {
 | 该次调用没报 `outputTokens`，或从其 stream 取不到首 token 时刻 | **不更新**，沿用上一次的值——绝不写 0，也不清空成空态 |
 | 失败的尝试（只有 `assistant/attempt`，没有 `assistant/message`） | 不更新。失败尝试没有可证的用量，写进速率就是编数 |
 | provider 未报 cache 桶 | 该次调用按 0 计 → 显示 `缓存 0%`；只有连计费输入也为 0 时才整颗不显示（分母为 0 → 无值） |
+| 该次调用 `outputTokens` 为 0，或速率低于 0.05 token/s | 显示 `0 tok/s`。**有意保留**：这是测出来的 0（是主张，不是占位），与 §2.5 禁的"没有数据时填 0"不冲突。裁决见 REQUIREMENTS §6.5；`ActivityPill` 的门槛只管 `decodeMs > 0`（没有解码窗口=没有速率可言），**不要**再加 `decodeTokens > 0` |
 | 一轮内多次调用 | 每次结算都刷新一次，因此轮进行中数字会**逐次变大或变小**——这是 v2 的目的，不是抖动 bug |
 | 只装了客户端半边、宿主半边没起 | `useProjection` 恒空 → 两颗消失。**不退回会话累计**——否则会伪装成功径 |
 
