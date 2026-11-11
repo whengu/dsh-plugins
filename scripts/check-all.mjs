@@ -1,12 +1,19 @@
 /**
- * Run every plugin's own checks from the repository root.
+ * Run every plugin's own checks from the repository root, plus the two repo-level
+ * tables no plugin owns.
  *
  * Each plugin owns its verification: `scripts/check*.mjs`, `test/*.test.mjs`, and
  * a `check` entry in its `package.json`. This script only discovers the plugins and
  * delegates, so a plugin that adds a check gets it run here without a second list
  * to keep in sync.
  *
+ * It then checks the README plugin index against reality (see `checkPluginIndex`),
+ * because per-plugin checks cannot see a table in the root README.
+ *
  * Usage: node scripts/check-all.mjs [--quiet]
+ *   Env: DSH_HOME (default /data) and DSH_PROFILE (default web) locate the profile
+ *   whose installed versions the index must match. Absent → that column is skipped
+ *   out loud rather than guessed at.
  *
  * Exit code is 0 only when every plugin passes. The summary at the end names each
  * plugin and its outcome, because a wall of passing output hides the one failure.
@@ -30,6 +37,80 @@ function findPlugins() {
     .map((entry) => path.join(root, entry.name))
     .filter((dir) => fs.existsSync(path.join(dir, "package.json")))
     .sort();
+}
+
+/**
+ * The README plugin index must match reality, in both directions.
+ *
+ * This gate used to print RESULT: PASS while the index said `0.5.0` for a plugin
+ * that was really at `0.16.2`, and while a whole plugin row was missing — a table
+ * in the root README is invisible to every plugin's own checks. Two rules, one per
+ * column, because only one of them is checkable everywhere:
+ *
+ *  - 「版本（源码）」 must equal that plugin's `package.json` — works on any machine.
+ *  - 「已装版本」 (the bolded reading) must equal the version installed under the
+ *    profile's `node_modules`. A developer box or CI without that profile cannot
+ *    measure it, so the column is skipped **out loud** (see `notes`), never silently.
+ *
+ * @param {string[]} plugins plugin directories discovered by `findPlugins`
+ */
+function checkPluginIndex(plugins) {
+  const problems = [];
+  const notes = [];
+  const readmePath = path.join(root, "README.md");
+  if (fs.existsSync(readmePath) === false) {
+    return { problems: ["README.md 不存在，插件索引无从核对"], notes };
+  }
+
+  // Rows whose first cell is `[name](dir/)` — the trailing slash is what separates
+  // an index row from the documentation-map table above it.
+  const rows = fs
+    .readFileSync(readmePath, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^\|\s*\[[^\]]+\]\([^)/]+\/\)\s*\|/.test(line))
+    .map((line) => line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim()));
+  const rowByDir = new Map();
+  for (const cells of rows) {
+    const link = /^\[([^\]]+)\]\(([^)/]+)\/\)/.exec(cells[0]);
+    if (link !== null) rowByDir.set(link[2], cells);
+  }
+  if (rowByDir.size === 0) return { problems: ["README 里解析不出任何插件索引行，核对需随表结构更新"], notes };
+
+  const installedRoot = path.join(process.env.DSH_HOME ?? "/data", "profiles", process.env.DSH_PROFILE ?? "web", "node_modules");
+  const canMeasure = fs.existsSync(installedRoot);
+  if (canMeasure === false) {
+    notes.push(`已装列未核对：本机没有 ${installedRoot}（换机器 / CI 属正常，只核对了源码列）`);
+  }
+
+  for (const dir of plugins) {
+    const name = path.basename(dir);
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    const cells = rowByDir.get(name);
+    if (cells === undefined) {
+      problems.push(`${name}: README 插件索引缺这一行`);
+      continue;
+    }
+    const sourceCell = cells[2] ?? "";
+    if (sourceCell !== manifest.version) {
+      problems.push(`${name}: 索引「版本（源码）」= ${sourceCell || "(空)"}，实际 package.json = ${manifest.version}`);
+    }
+    const claimed = /\*\*([^*]+)\*\*/.exec(cells[3] ?? "");
+    if (canMeasure === false) continue;
+    const installedPath = path.join(installedRoot, manifest.name, "package.json");
+    if (fs.existsSync(installedPath) === false) {
+      if (claimed !== null) problems.push(`${name}: 索引称已装 ${claimed[1]}，但 ${manifest.name} 不在该 profile 的 node_modules 里`);
+      continue;
+    }
+    const installed = JSON.parse(fs.readFileSync(installedPath, "utf8")).version;
+    if (claimed === null) problems.push(`${name}: 已装列读不出加粗版本号（应形如 **0.2.0**），无法与实测 ${installed} 核对`);
+    else if (claimed[1] !== installed) problems.push(`${name}: 索引「已装版本」= ${claimed[1]}，profile 实测 = ${installed}`);
+  }
+
+  for (const dir of rowByDir.keys()) {
+    if (fs.existsSync(path.join(root, dir)) === false) problems.push(`索引指向不存在的目录 ${dir}/`);
+  }
+  return { problems, notes };
 }
 
 /**
@@ -81,6 +162,19 @@ for (const dir of plugins) {
     note: failedStep === undefined ? "check passed" : `${failedStep} failed`,
   });
 }
+
+// Repo-level table check: the index is documentation, so no plugin can police it.
+const index = checkPluginIndex(plugins);
+for (const note of index.notes) console.log(`\n注：${note}`);
+if (index.problems.length > 0) {
+  console.log("\n=== README 插件索引 ===");
+  for (const problem of index.problems) console.log(`  ✗ ${problem}`);
+}
+outcomes.push({
+  name: "README 插件索引",
+  ok: index.problems.length === 0,
+  note: index.problems.length === 0 ? "源码列与已装列均与实测一致" : `${index.problems.length} 处与实测不符`,
+});
 
 const failed = outcomes.filter((outcome) => outcome.ok !== true);
 console.log("\n=== summary ===");
