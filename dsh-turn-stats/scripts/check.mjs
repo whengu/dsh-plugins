@@ -112,9 +112,18 @@ assert(zh.length >= 2 && en.length >= 2, `DICTIONARIES 解析不出文案键（z
 assert(JSON.stringify(zh.slice().sort()) === JSON.stringify(en.slice().sort()), `zh/en 文案键集合不一致：zh=[${zh}] en=[${en}]`);
 for (const key of ["speed", "cacheHit"]) assert(zh.includes(key), `缺少 ${key} 文案`);
 
+// 6. The projection key is duplicated on purpose — the host half is ESM and the
+//    client half is a lazy-CJS bundle that cannot import each other. If the two
+//    literals drift, `useProjection` simply finds nothing and BOTH pills vanish
+//    with no error anywhere, which is the worst failure mode this plugin has.
+const hostKey = /export const TURN_STATS_KEY = "([^"]+)"/.exec(text("lib/turn-stats.js"))?.[1];
+const clientKey = /const PROJECTION_KEY = "([^"]+)"/.exec(client)?.[1];
+assert(hostKey !== undefined && clientKey !== undefined, `投影 key 常量解析不到（host=${hostKey}, client=${clientKey}），check 需随结构更新`);
+assert(hostKey === clientKey, `投影 key 两侧不一致：host="${hostKey}" client="${clientKey}" → 两颗药丸会静默消失`);
+
 if (problems.length > 0) {
   console.error("check 失败：");
   for (const problem of problems) console.error(`  ✗ ${problem}`);
   process.exit(1);
 }
-console.log(`check 通过：${LIB_FILES.length} 个 lib 文件语法正常；包契约、patch 契约、双注册参数、双语平衡均一致。`);
+console.log(`check 通过：${LIB_FILES.length} 个 lib 文件语法正常；包契约、patch 契约、双注册参数、双语平衡、两侧投影 key 均一致。`);
