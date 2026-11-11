@@ -87,28 +87,30 @@ test("figures published through the wire equal the fold's own view", async () =>
     time: 3000,
     data: { turn: 1, step: 1, stream: stream(1200), usage: { inputTokens: 400, cacheReadTokens: 100, outputTokens: 900 } },
   });
-  publish({ type: "step/end", time: 3100, data: { turn: 1, step: 1 } });
 
-  // Still in flight: the wire carries nothing, and reading it is legal.
-  assert.equal(registry.snapshot(session, [TURN_STATS_KEY]).values[TURN_STATS_KEY], null);
-
-  publish({ type: "turn/end", time: 3200, data: { turn: 1, reason: "success" } });
-  const value = registry.snapshot(session, [TURN_STATS_KEY]).values[TURN_STATS_KEY];
-  assert.deepEqual(value, {
+  // v2: the call has settled, so the wire already carries it — the Turn is still
+  // running, and that no longer delays anything. This is the whole point of 0.2.0.
+  const midTurn = registry.snapshot(session, [TURN_STATS_KEY]).values[TURN_STATS_KEY];
+  assert.deepEqual(midTurn, {
     turn: 1,
     decodeMs: 1800,
     decodeTokens: 900,
     cacheReadTokens: 100,
     billedInputTokens: 500,
   });
+
+  publish({ type: "step/end", time: 3100, data: { turn: 1, step: 1 } });
+  publish({ type: "turn/end", time: 3200, data: { turn: 1, reason: "success" } });
+  const value = registry.snapshot(session, [TURN_STATS_KEY]).values[TURN_STATS_KEY];
+  assert.deepEqual(value, midTurn, "轮末不再改写数值：结算那一刻就是最终值");
   // The snapshot is the client-facing value; the fold's view is the same object.
-  assert.deepEqual(value, turnStatsView({ open: null, last: value }));
+  assert.deepEqual(value, turnStatsView({ last: value }));
 
   // The rate the pill will print, at the pill's own precision rule.
   assert.equal(Math.round(value.decodeTokens / (value.decodeMs / 1e3)), 500);
 });
 
-test("the change feed fires on commit and not on events that change nothing", async () => {
+test("the change feed fires on each settled call and not on events that change nothing", async () => {
   const { ctx, registry } = await assemble();
   const session = fakeSession();
   const seen = [];
@@ -119,22 +121,30 @@ test("the change feed fires on commit and not on events that change nothing", as
   const publish = (event) => ctx.emit("session/event", session, session.append(event));
 
   publish({ type: "user/message", time: 100, data: { message: {} } });
-  assert.deepEqual(seen, [], "无关事件不该惊动这个 key");
-
-  // The first state-changing event publishes `null` once: the cell's cached
-  // views start as [undefined, undefined], so the empty view's undefined → null
-  // transition is itself a change (dsh-session-projection/lib/index.js:562-572).
-  // Harmless downstream — `null` renders no pill — but worth pinning, because it
-  // means the feed is not literally "one call per committed turn".
   publish({ type: "step/start", time: 1000, data: { turn: 1, step: 1 } });
+  publish({ type: "assistant/attempt", time: 1100, data: { turn: 1, step: 1, stream: stream(1050) } });
+  assert.deepEqual(seen, [], "v2 只认 assistant/message，开步与重试不该惊动这个 key");
+
   publish({
     type: "assistant/message",
     time: 2000,
     data: { turn: 1, step: 1, stream: stream(1500), usage: { inputTokens: 10, outputTokens: 10 } },
   });
-  assert.deepEqual(seen, [null], "轮进行中只可能有多余的 null，绝不能有半截数字");
+  assert.equal(seen.length, 1, "第一次调用结算就该出数");
+  assert.equal(seen[0]?.decodeMs, 500);
 
-  publish({ type: "turn/end", time: 2100, data: { turn: 1, reason: "success" } });
-  assert.equal(seen.length, 2, "提交应再惊动一次，且只有这一次带数字");
-  assert.equal(seen[1].decodeMs, 500);
+  // A second call inside the same Turn refreshes the pill again — v1 waited for
+  // `turn/end`, which is exactly the delay v2 removed.
+  publish({ type: "step/start", time: 2100, data: { turn: 1, step: 2 } });
+  publish({
+    type: "assistant/message",
+    time: 3000,
+    data: { turn: 1, step: 2, stream: stream(2600), usage: { inputTokens: 20, outputTokens: 40 } },
+  });
+  assert.equal(seen.length, 2, "同轮第二次调用结算应再刷新一次");
+  assert.equal(seen[1].decodeTokens, 40);
+  assert.equal(seen[1].decodeMs, 400);
+
+  publish({ type: "turn/end", time: 3100, data: { turn: 1, reason: "success" } });
+  assert.equal(seen.length, 2, "轮末不再惊动任何东西：它不再改变状态");
 });

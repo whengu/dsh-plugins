@@ -35,7 +35,9 @@
 - [ ] **安装 + 真机验收**（尚未做）。装法见 README「安装」；本插件双半边，装完要重启 Host + `Ctrl+F5`。
 - [x] **已安装并生效**：0.1.0 → 0.1.1（`/plugins/dist/`，见下「安装与实测证据」）。
 - [ ] 视觉与文案外观（字号、间距、图标、截断提示）由用户确认。数值口径已用服务端数据自证，见下。
-- [ ] **v2（0.2.0）实现**：文档已定稿（REQUIREMENTS §6 / DESIGN §1·§2·§3·§5·§7·§9 / README 口径段），**代码未动**。落地清单：fold 去掉累加与 `turn/end` 分支 → `stateVersion` 1→2 → 客户端文案「本轮」→「最近一次调用」→ 改两条旧用例 + 新增两条 → `pnpm check && pnpm test` → 出包装 `/plugins/dist` → **要重启 Host**（替换已装包的宿主 JS；判据见工作区 `notes/config/quick-facts.md`「升级要不要重启」）。
+- [x] **v2（0.2.0）实现**：fold 只认 `assistant/message`、去掉 `open`/`settledSteps`/`turn/end` 提交点，`stateVersion` 1→2，客户端只改文案并缩短为 `缓存 {percent}%`（用户要求省状态栏空间，REQUIREMENTS §6.4）。`pnpm check` rc=0、`pnpm test` 18/18。
+  **用例有效性做过变异验证**（4 个变异全转红，还原后 md5 与基线一致）：去掉「不可证就不发布」守卫 → 4 红；`stateVersion` 退回 1 → 1 红；`stateSchema` 去掉 `.strict()`（v1 的 `{open,last}` 会被当成 v2 状态静默读走）→ 1 红；去掉时间倒挂夹取 → 1 红。**新增用例里有一条专门拒收 v1 状态形状**，别顺手把 `.strict()` 去掉。
+- [ ] **0.2.0 安装 + 重启**：宿主 fold 变了 → 替换已装包必须重启 Host（判据见工作区 `notes/config/quick-facts.md`「升级要不要重启」）。重启后旧 checkpoint 因 `stateVersion` 不符被丢弃、每会话冷读重放一次尾部，属预期。
 - [x] ~~下期若做实时值，改动点是宿主 fold 增加 `open` 快照下发~~ —— **v2 走了另一条路**：不新增 `open` 下发，而是**取消跨调用求和**，直接发每次调用的结算值，代码反而变少。真·流式实时（接 `agent/assistant-stream`）已明确否决，理由写在 DESIGN §7。
 
 ## 回滚

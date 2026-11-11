@@ -77,6 +77,8 @@ state = {
 
 **恢复语义**：投影注册表会重放 log 重新 fold，所以重开会话、翻页、compaction 都不影响 `last`。附带一条 v2 才有的性质，必须有用例钉住：**孤立的 `assistant/message` 事件（前面没有 `step/start`、没有 `assistant/attempt`）也要能出值**——它同时证明了 fold 无前置依赖、以及窗口分页只截到半个轮时数值不会莫名消失。
 
+**v2 顺带消掉了那帧多余的 `null`**。v1 里 `step/start` 就先改动状态，视图于是经历 `undefined → null`，change feed 会发出一帧 `null`（cell 的视图缓存初值是 `[void 0, void 0]`，`dsh-session-projection/lib/index.js:562-572`）；虽然渲染上无害（`null` 不画药丸），但那是一次白送的下发。v2 第一个改动状态的事件就是携带用量那条，视图直接从 `undefined` 变成数字。真注册表用例已钉住：开步与重试都不惊动这个 key，第一次惊动就带数字，`turn/end` 则完全静默。
+
 ## 4. 前端：原地替换两颗药丸
 
 宿主公式写死在 bundle 里、无 hook（`dsh-client-ui-chat/lib/client.js:9565`、`:9695`），唯一开关 `performanceUsage` 只管显示几段读数。所以只能整颗替换。
@@ -105,6 +107,7 @@ ctx.slots.inject("conversation.composer.dock", () => {
 - **恒定渲染静态 plain pill**，不读 `performanceUsage`，不建 dialog → 需求 2.2（不要可点开详情卡）满足；
 - `useProjection("turnStats")` 无值 → `return null`，整颗不渲染（宿主 `UsagePill` 本来就这么做）；
 - 数字格式复刻宿主规则：tps ≥10 取整、<10 一位小数（`client.js:5881`）；命中率四舍五入将到 100 时自动补小数位（`client.js:8784`）。
+- **文案长度是预算**（用户 11-11 追加，REQUIREMENTS §6.4）：状态栏空间珍贵，药丸文字为 `{tps} tok/s` 与 `缓存 {percent}%`（en `Cache {percent}%`），比 v1 的「缓存命中」短两字。`tok/s` 保留是刻意的——单位一丢，同一个数在宿主和本插件就有了两种说法；而"这是缓存"由图标承载，不占字。`title` / `description` 不进状态栏，可以写全长，已改称「最近一次调用」。
 
 ### 客户端依赖纪律
 

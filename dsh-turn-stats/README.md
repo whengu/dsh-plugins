@@ -3,7 +3,7 @@
 状态：**已安装并生效于 profile `web`（0.1.1）**；18/18 用例通过（含真注册表集成测试），口径已与原始 durable log 逐字对表。基线 dsh `0.2.2-rc.1`。安装与实测证据见 [HANDOFF.md](HANDOFF.md#安装与实测证据01x)。
 需求见 [REQUIREMENTS.md](REQUIREMENTS.md)，方案与全部证据见 [DESIGN.md](DESIGN.md)，交接与决策见 [HANDOFF.md](HANDOFF.md)。
 
-> 🚧 **0.2.0 口径改版进行中**：统计范围从「最近一个已完成轮次」改为「**最近一次模型调用**」，因为一轮可能持续非常久，等轮末等于看不到（需求变更见 [REQUIREMENTS §6](REQUIREMENTS.md)，决定记录见 DESIGN §1）。目前**只改了文档，代码未动**；下文凡写「本轮」处，v2 落地后一律读作「最近一次模型调用」。
+> 🔧 **0.2.0 口径改版：代码已完成，待安装 + 重启 Host**。统计范围从「最近一个已完成轮次」改为「**最近一次模型调用**」，因为一轮可能持续非常久，等轮末等于看不到（需求变更见 [REQUIREMENTS §6](REQUIREMENTS.md)，决定记录见 DESIGN §1）。药丸文字同时缩短（`缓存命中 72%` → `缓存 72%`，REQUIREMENTS §6.4）。下文凡写「本轮」处，0.2.0 起一律读作「最近一次模型调用」。
 
 ## 作用
 
@@ -84,6 +84,6 @@ pnpm test                     # 18 个用例（零网络、零浏览器）
 
 ## 版本
 
-- 0.2.0 —（进行中，文档已定稿）**口径改为最近一次模型调用**：fold 去掉跨调用累加（`open` 累加器、`settledSteps`、`step/start` 跨轮清理、`turn/end` 提交点全部删除），状态从 `{open, last}` 塌成 `{last}`，**`stateVersion` 1 → 2**；线载荷形状不变故客户端只改文案。安装要重启 Host。
+- 0.2.0 — **口径改为最近一次模型调用**：fold 去掉跨调用累加（`open` 累加器、`settledSteps`、`step/start` 跨轮清理、`turn/end` 提交点全部删除，只认 `assistant/message`），状态从 `{open, last}` 塌成 `{last}`，**`stateVersion` 1 → 2**；线载荷形状不变故客户端只改文案。副作用：不可证的调用一律不发布（宁可留着上一个数），且 change feed 不再有多余的 `null` 帧。药丸文字缩短为 `缓存 {percent}%`。安装要重启 Host。
 - 0.1.0 — 首版：`turnStats` 投影 + 顶替两颗药丸（轮口径，`turn/end` 定格）。
 - 0.1.1 — `@deepseek-ai/dsh-llm` 与 `zod` 改为 **optional peer**（`engines.dsh` 才是运行门槛），与 `dsh-read-img` 同规约。装 0.1.0 时 pnpm 报 `Issues with peer dependencies`：把宿主包写成硬 peer 且精确锁版，会让以后每次宿主升级都报未满足。

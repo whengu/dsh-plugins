@@ -1,9 +1,9 @@
 {
   "name": "dsh-turn-stats",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Re-scope the two composer stat pills (decode speed, cache hit) from whole-session to the current turn.",
+  "description": "Point the two composer stat pills (decode speed, cache hit) at the most recent model call instead of the whole session.",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",

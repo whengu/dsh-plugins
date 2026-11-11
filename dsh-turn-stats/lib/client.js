@@ -245,16 +245,16 @@ window.__ModuleLoader__.load({
 		 */
 		const DICTIONARIES = {
 			zh: {
-				title: "本轮统计",
-				description: "把输入框下方的速率与缓存命中率改为按本轮统计。",
+				title: "最近一次调用",
+				description: "速率与缓存命中率按最近一次模型调用统计，结算即更新。",
 				speed: "{tps} tok/s",
-				cacheHit: "缓存命中 {percent}%",
+				cacheHit: "缓存 {percent}%",
 			},
 			en: {
-				title: "Per-turn statistics",
-				description: "Re-scope the composer speed and cache-hit pills to the current turn.",
+				title: "Last call",
+				description: "Speed and cache hit for the most recent model call.",
 				speed: "{tps} tok/s",
-				cacheHit: "Cache hit {percent}%",
+				cacheHit: "Cache {percent}%",
 			},
 		};
 
