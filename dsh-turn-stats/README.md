@@ -78,3 +78,4 @@ pnpm test                     # 18 个用例（零网络、零浏览器）
 ## 版本
 
 - 0.1.0 — 首版：`turnStats` 投影 + 顶替两颗药丸。
+- 0.1.1 — `@deepseek-ai/dsh-llm` 与 `zod` 改为 **optional peer**（`engines.dsh` 才是运行门槛），与 `dsh-read-img` 同规约。装 0.1.0 时 pnpm 报 `Issues with peer dependencies`：把宿主包写成硬 peer 且精确锁版，会让以后每次宿主升级都报未满足。
