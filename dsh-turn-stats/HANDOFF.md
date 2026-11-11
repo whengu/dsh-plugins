@@ -32,8 +32,7 @@
 ## 还差什么
 
 - [x] ~~真注册表是否接受这个 definition~~ —— 已由 `test/registry.test.mjs` 证明（注册不抛、key 在快照里可见、线值过 schema）。
-- [ ] **安装 + 真机验收**（尚未做）。装法见 README「安装」；本插件双半边，装完要重启 Host + `Ctrl+F5`。
-- [x] **已安装并生效**：0.1.0 → 0.1.1（`/plugins/dist/`，见下「安装与实测证据」）。
+- [x] **已安装并生效**：0.1.0 → 0.1.1（轮口径，见下「安装与实测证据（0.1.x）」）；0.2.0（调用口径，见「安装与实测证据（0.2.0）」）。数值口径全部用服务端 checkpoint 自证，不依赖浏览器。
 - [ ] 视觉与文案外观（字号、间距、图标、截断提示）由用户确认。数值口径已用服务端数据自证，见下。
 - [x] **v2（0.2.0）实现**：fold 只认 `assistant/message`、去掉 `open`/`settledSteps`/`turn/end` 提交点，`stateVersion` 1→2，客户端只改文案并缩短为 `缓存 {percent}%`（用户要求省状态栏空间，REQUIREMENTS §6.4）。`pnpm check` rc=0、`pnpm test` 18/18。
   **用例有效性做过变异验证**（4 个变异全转红，还原后 md5 与基线一致）：去掉「不可证就不发布」守卫 → 4 红；`stateVersion` 退回 1 → 1 红；`stateSchema` 去掉 `.strict()`（v1 的 `{open,last}` 会被当成 v2 状态静默读走）→ 1 红；去掉时间倒挂夹取 → 1 红。**新增用例里有一条专门拒收 v1 状态形状**，别顺手把 `.strict()` 去掉。
@@ -103,3 +102,33 @@ w(d); print(f)"
 - `install_bundle` 每次报 `[WARN] Issues with peer dependencies found`：**已定位**，11-11 在 profile 依赖清单的**隔离副本**里复现（`pnpm install --lockfile-only --ignore-scripts`，不碰真 profile）后用 `pnpm peers check` 点名：`@deepseek-ai/dsh-web-search-exa`、`dsh-context`、`dshmarket`、`@nonamelego/dsh-catppuccin` 四家报缺失，**本包出现 0 次**。属"运行时由宿主提供"的 peer 在依赖树里天然不可见，无需处理。
 - `dsh --dump-config` 报 `entry "ability-strip" not found`：**已消失**。当时 `dsh-ability-strip` 包未启用，patch 层没进树而 patch 里引用了其条目 id。11-11 又发现同一文件里遗留 `- id: ability-strip / disabled: true`（条目级二次关闭，GUI 的开关只动包层、不会清理它），已按 `config-change-protocol` 删除并现查确认启用。
 - `dsh-ability-strip` 的 `pnpm check` 偶发 FAIL：11-11 连跑 **13 次全 PASS**，无法复现。**教训在我这边**：第一次 FAIL 时我只 `tail -8`，把失败的脚本名与断言文本丢掉了，所以现在无从归因。下次遇到同类一次性的 check 失败，**先留全量输出再重跑**。
+
+## 安装与实测证据（0.2.0）
+
+```bash
+# 打包产物自检（files 清单以包为准，不是以工作区为准）
+tar xOf dist/dsh-turn-stats-0.2.0.tgz package/lib/turn-stats.js | grep -c "TURN_STATS_STATE_VERSION = 2"
+tar xOf dist/dsh-turn-stats-0.2.0.tgz package/lib/client.js | grep 'cacheHit:'
+install -m 644 dist/dsh-turn-stats-0.2.0.tgz /plugins/dist/    # 只追加，sha256 与仓库产物一致
+# plugin_manager: action=install_bundle, target=file:/plugins/dist/dsh-turn-stats-0.2.0.tgz
+```
+
+读运行态只有一条路，且**必须按会话 id 钉死文件**：
+
+```bash
+python3 -c "
+import json
+d=json.load(open('/data/storages/session_projcache/sessions/<该会话的id>.json'))
+out=[]
+def w(o):
+    if isinstance(o,dict):
+        for k,v in o.items():
+            out.append(v) if k=='turnStats' and isinstance(v,dict) and 'val' in v else w(v)
+    elif isinstance(o,list): [w(v) for v in o]
+w(d); print([(v['ver'], v['seq'], v['val']) for v in out])"
+```
+
+1. **跑的是 v2**：同一个 checkpoint 文件从 0.1.x 时代的 `ver 1` + `{open,last}` 变成 `ver 2` + `{last}`。旧行被替换而不是被静默沿用——`stateVersion` 与 `.strict()` 那两层守卫在真宿主上是起作用的。
+2. **这次重启不是必要条件**（推翻本仓库此前的绝对说法）：`install_bundle` 返回 `applied` 后，在**未重启**的进程里（`ps` 显示 dsh `etimes 973`，远早于安装时刻）读到的就已经是 `ver 2`。官方"替换已装包要重启"讲的是保守下限，第三方插件的宿主模块至少这一例是 HMR 直接换掉的。仍然建议重启，但**判据要用运行态形状，不要拿文件差异当结论**——工作区 `notes/config/quick-facts.md` 已按此改正。
+3. **§6.3 验收通过（同轮内就刷新）**：同一轮 `turn 43` 内两次读取，`seq 5829 → 5836`、值 `7051ms / 1396 tok → 3728ms / 921 tok`。轮还没结束，数值已经属于本轮并随每次调用改写——0.1.x 的 `turn/end` 提交点做不到，也不允许做到。
+4. **踩过的取数坑**：`ls -t` 取最新 checkpoint 会抓到**并行会话**的文件（本 profile 同时有多个会话在写）。当时表现为"轮号从 42 跳到 72"，看着像 fold 坏了，其实是读错文件。判据：先固定会话 id，再看 `seq` 是否单调。

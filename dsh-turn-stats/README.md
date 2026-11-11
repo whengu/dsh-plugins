@@ -1,9 +1,9 @@
 # dsh-turn-stats
 
-状态：**已安装并生效于 profile `web`（0.1.1）**；18/18 用例通过（含真注册表集成测试），口径已与原始 durable log 逐字对表。基线 dsh `0.2.2-rc.1`。安装与实测证据见 [HANDOFF.md](HANDOFF.md#安装与实测证据01x)。
+状态：**已安装并生效于 profile `web`（0.2.0）**；18/18 用例通过（含真注册表集成测试 + 4 个变异验证），口径已与原始 durable log 逐字对表。基线 dsh `0.2.2-rc.1`。安装与实测证据分版记录：0.1.x 的轮口径对表、0.2.0 的运行态实时性，均在 [HANDOFF.md](HANDOFF.md)。
 需求见 [REQUIREMENTS.md](REQUIREMENTS.md)，方案与全部证据见 [DESIGN.md](DESIGN.md)，交接与决策见 [HANDOFF.md](HANDOFF.md)。
 
-> 🔧 **0.2.0 口径改版：代码已完成，待安装 + 重启 Host**。统计范围从「最近一个已完成轮次」改为「**最近一次模型调用**」，因为一轮可能持续非常久，等轮末等于看不到（需求变更见 [REQUIREMENTS §6](REQUIREMENTS.md)，决定记录见 DESIGN §1）。药丸文字同时缩短（`缓存命中 72%` → `缓存 72%`，REQUIREMENTS §6.4）。下文凡写「本轮」处，0.2.0 起一律读作「最近一次模型调用」。
+> ✅ **0.2.0 已生效：统计口径是「最近一次模型调用」**。统计范围从「最近一个已完成轮次」改为「**最近一次模型调用**」，因为一轮可能持续非常久，等轮末等于看不到（需求变更见 [REQUIREMENTS §6](REQUIREMENTS.md)，决定记录见 DESIGN §1）。药丸文字同时缩短（`缓存命中 72%` → `缓存 72%`，REQUIREMENTS §6.4）。下文凡写「本轮」处，0.2.0 起一律读作「最近一次模型调用」。
 
 ## 作用
 
@@ -50,14 +50,14 @@
 
 ## 安装
 
-跨插件铁律见仓库根 [INSTALL.md](../INSTALL.md)。本插件是 **host + client 双半边**：宿主半边改了投影注册、客户端半边改了渲染，**升级必须重启 Host 并硬刷新浏览器**（[§15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)）。
+跨插件铁律见仓库根 [INSTALL.md](../INSTALL.md)。本插件是 **host + client 双半边**：宿主半边改了投影注册、客户端半边改了渲染，客户端半边**只需浏览器硬刷新**。宿主半边按官方保守下限应当重启 Host（[§15.1](../INSTALL.md#151-重载与重启官方明文决定改完要不要重启)），但 0.2.0 实测**未重启也已生效**——别拿文件差异当结论，按运行态判据现查：读该会话投影 checkpoint 里 `turnStats` 的 `ver`（应为 `2`）与 `val` 形状（应为 `{last: …}`）。**判会话文件必须按会话 id 钉死路径**，`ls -t` 会抓到并行会话。
 
 ```bash
 # 站在本插件目录里
 pnpm check
 pnpm pack --pack-destination dist
 dsh plugin --profile web add ./dist/dsh-turn-stats-<版本>.tgz
-# 然后：重启 Host + 浏览器 Ctrl+F5
+# 然后：浏览器 Ctrl+F5；宿主半边先按上面的 checkpoint 判据现查，不确定再重启 Host
 ```
 
 卸载：`dsh plugin --profile web remove dsh-turn-stats`。
