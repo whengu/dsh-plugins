@@ -1,6 +1,6 @@
 # dsh-turn-stats
 
-状态：**已实现，18/18 用例通过（含真注册表集成测试），未安装**。基线 dsh `0.2.2-rc.1`、profile `web`。
+状态：**已安装并生效于 profile `web`（0.1.1）**；18/18 用例通过（含真注册表集成测试），口径已与原始 durable log 逐字对表。基线 dsh `0.2.2-rc.1`。安装与实测证据见 [HANDOFF.md](HANDOFF.md#安装与实测证据01x)。
 需求见 [REQUIREMENTS.md](REQUIREMENTS.md)，方案与全部证据见 [DESIGN.md](DESIGN.md)，交接与决策见 [HANDOFF.md](HANDOFF.md)。
 
 ## 作用
@@ -36,6 +36,7 @@
 | 限制 | 原因 |
 |---|---|
 | 本轮进行中数值不动，轮结束才跳 | `usage` 随 `assistant/message` 才落盘，流式中的那一步没有任何已提交数据；提前出数就是需求 2.4 禁止的前端推算 |
+| 本轮无缓存上报时显示 `缓存命中 0%` | provider 只在**部分** `assistant/message` 上带 `cacheReadTokens`（本会话实测：turn 31 有 137,088，turn 32–34 为 0）。宿主会话级同样是「无上报即 0」，两颗同源 |
 | 带重试的轮，缓存分母可能比宿主会话值少一次尝试 | 我们对齐 `sessionStats`（按 `assistant/message` 计），宿主会话缓存对齐 `tokenUsage`（按计费尝试计）。两者定义本就不同 |
 | 图标依赖宿主 sprite 的 `<symbol>` id | 不可 require primitives；id 找不到时该颗只显示文字，不显示破图 |
 | 悬停提示用原生 `title`，只在文字被截断时出现 | 宿主用 primitives 的 `Tooltip`（`onlyWhenClipped`），同样不可 require。可观察契约（截断才给全文）保留，延迟由浏览器决定 |

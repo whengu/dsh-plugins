@@ -28,7 +28,8 @@
 
 - [x] ~~真注册表是否接受这个 definition~~ —— 已由 `test/registry.test.mjs` 证明（注册不抛、key 在快照里可见、线值过 schema）。
 - [ ] **安装 + 真机验收**（尚未做）。装法见 README「安装」；本插件双半边，装完要重启 Host + `Ctrl+F5`。
-- [ ] 验收必须核对**数值**，不是核对元素存不存在：静默回落会让画面看起来「装了但没变」。
+- [x] **已安装并生效**：0.1.0 → 0.1.1（`/plugins/dist/`，见下「安装与实测证据」）。
+- [ ] 视觉与文案外观（字号、间距、图标、截断提示）由用户确认。数值口径已用服务端数据自证，见下。
 - [ ] 需求书写明「本期只交付插件本体」，故未做实时逐 token 刷新、未写额外文档/测试工程化。若下期要做实时值，改动点是宿主 fold 增加 `open` 快照下发（需要 `stateVersion` 递增），不是在客户端补算。
 
 ## 回滚
@@ -44,3 +45,51 @@ dsh plugin --profile web remove dsh-turn-stats   # 宿主重启 + 硬刷新后�
 - 打包安装纪律（tarball only、`dist/` 只追加、重载与重启）：仓库根 [INSTALL.md](../INSTALL.md)。
 - 官方插件规约：`official-plugins` 技能的 `references/practices.md`（禁 require 客户端包、客户端不折事件、patch 整条覆盖等）。
 - 顺带发现：`dsh-ability-strip` 的 `pnpm check` 偶发 FAIL（同代码连跑两次又 PASS）。不是本插件引入的，未深查。
+
+## 安装与实测证据（0.1.x）
+
+安装走官方入口，不手写 profile 的 `package.json` / `cordis.patch.yml`：
+
+```bash
+install -m 644 dist/dsh-turn-stats-<版本>.tgz /plugins/dist/     # 持久 bind mount，包只追加
+# plugin_manager: action=install_bundle, target=file:/plugins/dist/dsh-turn-stats-<版本>.tgz
+```
+
+`install_bundle` 三次返回均为 `application: "applied"`、`warnings: []`、**没有 `restart-required`** —— 与官方明文一致：*安装新 bundle 可经 HMR 激活；替换已安装的包才需要重启换新 JS 代际*。
+
+### 宿主半边确实活着（非视觉、可复跑）
+
+投影 checkpoint 会把每个 key 的 `(ver, seq, val)` 落盘，直接读它就能证明注册与 fold 发生在**真宿主**上，不必碰浏览器：
+
+```bash
+cd /data/storages/session_projcache/sessions && python3 -c "
+import json,glob
+d=json.load(open('<该会话的>.json'))
+f=[]
+def w(o):
+    if isinstance(o,dict):
+        for k,v in o.items():
+            f.append(v) if k=='turnStats' and isinstance(v,dict) and 'val' in v else w(v)
+    elif isinstance(o,list): [w(v) for v in o]
+w(d); print(f)"
+```
+
+0.1.0 装好后立刻在该目录看到 `turnStats` 的 checkpoint（`ver: 1`，`open` 落在当时正在跑的那一轮），证明 HMR 已激活。
+
+### 口径正确性的逐字对表
+
+原始 durable log（`session.v4.jsonl.zstd`，`zstd -dc` 后按 `assistant/message` 的 `usage` 按轮求和）对 turn 33：
+
+| 量 | log 求和 | 本插件 checkpoint 的 `last`（turn 33） |
+|---|---|---|
+| 计费输入 | 850,598 | 850,598 |
+| 缓存读 | 0 | 0 |
+| 输出 | 2,989 | 2,989 |
+
+> 途中一次**误判被数据推翻**：见 turn 33 的 `cacheReadTokens=0` 而宿主 `tokenUsage.totals.cacheReadTokens=80,456,192`，一度判定自己的 fold 漏了缓存桶。按轮求和后证实：80M 全部来自更早轮次（turn 31 有 137,088），turn 32–34 该 provider 确实没上报缓存读。**结论：缓存桶只在部分消息上出现，本轮无上报时显示 0% 与宿主会话口径同源**，不是丢数。
+
+### 已知遗留（都不是本插件引入）
+
+- `install_bundle` 每次报 `[WARN] Issues with peer dependencies found`：11-09 装 `dsh-read-img 0.1.3→0.1.4` 的日志里就已出现，早于本插件；具体是哪个包未定位（不跑 `pnpm` 进 profile 目录，官方禁止）。本包已按 `dsh-read-img` 规约改 optional peer，只是不再参与该检查。
+- `dsh --dump-config` 报 `entry "ability-strip" not found`：`dsh-ability-strip` 现为 `enabled: false`，patch 仍引用其条目 id。
+- `dsh-ability-strip` 的 `pnpm check` 偶发 FAIL（同代码连跑两次又 PASS）。
