@@ -11,15 +11,18 @@
  * because per-plugin checks cannot see a table in the root README.
  *
  * Usage: node scripts/check-all.mjs [--quiet]
- *   Env: DSH_HOME (default /data) and DSH_PROFILE (default web) locate the profile
- *   whose installed versions the index must match. Absent → that column is skipped
- *   out loud rather than guessed at.
+ *   Env: DSH_HOME (default <home>/.dsh) and DSH_PROFILE (default web) locate the
+ *   profile whose installed versions the index must match. Absent → that column is
+ *   skipped out loud rather than guessed at. Nothing here hardcodes a machine: the
+ *   repository is shared across machines (INSTALL.md §16), so "not installed here"
+ *   is a note, not a failure.
  *
  * Exit code is 0 only when every plugin passes. The summary at the end names each
  * plugin and its outcome, because a wall of passing output hides the one failure.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -77,7 +80,10 @@ function checkPluginIndex(plugins) {
   }
   if (rowByDir.size === 0) return { problems: ["README 里解析不出任何插件索引行，核对需随表结构更新"], notes };
 
-  const installedRoot = path.join(process.env.DSH_HOME ?? "/data", "profiles", process.env.DSH_PROFILE ?? "web", "node_modules");
+  // DSH_HOME 的默认值是 `~/.dsh`（各平台一样），不再是写死的 `/data` —— 那是某台机器的
+  // 布局，换机器就指错目录，还会把「这台机器没装」误报成索引错。
+  const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), ".dsh");
+  const installedRoot = path.join(dshHome, "profiles", process.env.DSH_PROFILE ?? "web", "node_modules");
   const canMeasure = fs.existsSync(installedRoot);
   if (canMeasure === false) {
     notes.push(`已装列未核对：本机没有 ${installedRoot}（换机器 / CI 属正常，只核对了源码列）`);
@@ -99,7 +105,12 @@ function checkPluginIndex(plugins) {
     if (canMeasure === false) continue;
     const installedPath = path.join(installedRoot, manifest.name, "package.json");
     if (fs.existsSync(installedPath) === false) {
-      if (claimed !== null) problems.push(`${name}: 索引称已装 ${claimed[1]}，但 ${manifest.name} 不在该 profile 的 node_modules 里`);
+      // 本仓库多机器同步（见 INSTALL.md §16）：这一列记的是「发布 / 实测那台机器」的已装值。
+      // 本机没装不等于索引写错了，只是这台机器无从核对——与上面 canMeasure 缺失同款处理，
+      // 出声说明而不是猜。装了的机器仍然逐字核对（下面两行），那条不受影响。
+      if (claimed !== null) {
+        notes.push(`${name}: 本机未装（${installedRoot} 下没有该包），已装列 ${claimed[1]} 未核对`);
+      }
       continue;
     }
     const installed = JSON.parse(fs.readFileSync(installedPath, "utf8")).version;

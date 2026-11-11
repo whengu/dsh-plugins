@@ -840,3 +840,33 @@ hint: Updates were rejected because the remote contains work that you do not hav
 
 `README.md` 与 `INSTALL.md` 是改动最频繁、冲突概率最高的两个文件。改它们之前**先 pull**，
 改完尽快提交推送，缩短冲突窗口。插件目录内的文件只由负责该插件的会话改，冲突面小得多。
+
+### 16.7 文档不要写死本机路径
+
+本仓库**多机器同步：一台 Windows、一台 Linux**。所以这里的每个文件都会同时出现在两种布局下，
+任何一台机器的绝对路径，在另一台机器上要么不存在，要么指到别的东西。
+
+**规则：文档与脚本里的路径一律用可移植表述，不写本机绝对路径。**
+
+| 场景 | 写法 | 不写 |
+| --- | --- | --- |
+| profile 目录 | `$DSH_HOME/profiles/<profile>/`（POSIX 同式：`${DSH_HOME:-$HOME/.dsh}/profiles/<profile>`） | `/data/profiles/web/`、`C:\Users\<你>\.dsh\profiles\web\` |
+| dsh 安装树 | `<dsh 安装目录>/node_modules/@deepseek-ai/...`，具体值用 `npm root -g` 取 | `/opt/conda/lib/node_modules/...`、`D:\Program\nvm\...\node_modules\...` |
+| 仓库自身 | 仓库内**相对路径**（`../INSTALL.md`） | `D:/Users/.../dsh-plugins/...`、`/workspace/...` |
+| 脚本默认值 | `process.env.DSH_HOME ?? path.join(os.homedir(), ".dsh")` | `process.env.DSH_HOME ?? "/data"` |
+
+`DSH_HOME` 的官方默认值是 **`~/.dsh`（各平台一致）**，不是 `/data`。脚本里写 `/data` 是把某台机器的
+布局当成规范：换机器就指错目录，还会把「这台机器没装」误报成「索引写错了」。
+
+**历史记录是例外，但必须标明环境。** 实测证据要写清是在哪台机器/什么环境量的，读者才知道能不能套用：
+
+- ✅ `2026-11-11 在 Linux 容器（/data/profiles/web）实测：...`
+- ❌ `2026-11-11 实测：...`（读者在另一台机器复现不出来，会以为文档错了或自己装漏了）
+
+这类记录**不需要回头重写**——它是当时的事实留档。要改的是**新写的**内容：命令、默认值、待办清单
+这类会被照着执行的，必须机器无关；只有「当时确实在这个路径下做的」这种叙事，才允许出现绝对路径，
+并附上环境。**判断标准：读者会不会照着敲？会，就不能写死。**
+
+**闸门已经机器无关**：`scripts/check-all.mjs` 的「已装版本」列，本机装了才逐字核对；本机没装只
+**出声提示**（`注：<包名>: 本机未装 ...，已装列 <版本> 未核对`），不判红。因为它核的是
+「发布/实测那台机器」的值，本机没装不等于索引错。
