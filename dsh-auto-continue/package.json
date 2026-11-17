@@ -1,0 +1,40 @@
+{
+  "name": "dsh-auto-continue",
+  "version": "0.2.4",
+  "private": true,
+  "description": "Host + client dsh plugin: after a Host crash, tail-scan the newest persisted sessions and resume the ones left at an open turn with an advisory continuation hint. Stateless, writes nothing, no toggle.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/frames.js",
+    "lib/detect.js",
+    "lib/boot.js",
+    "cordis.patch.yml",
+    "README.md",
+    "scripts/check.mjs"
+  ]
+}

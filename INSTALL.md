@@ -647,6 +647,8 @@ dsh plugin --profile web add ./dist/<包名>-<版本>.tgz
 - [dsh-ability-strip/README.md](dsh-ability-strip/README.md)（双半边，有浏览器半边）
 - [dsh-subagent-wait-reminder/README.md](dsh-subagent-wait-reminder/README.md)（纯 Host 侧）
 - [dsh-read-img/README.md](dsh-read-img/README.md)（纯 Host 侧，单工具）
+- [dsh-turn-stats/README.md](dsh-turn-stats/README.md)（双半边，顶替 composer 药丸）
+- [dsh-auto-continue/README.md](dsh-auto-continue/README.md)（纯 Host 侧，启动时续跑被中断的会话）
 
 ---
 
